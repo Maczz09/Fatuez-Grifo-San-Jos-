@@ -1,0 +1,13 @@
+packages:
+  - apps/*
+  - services/*
+  - packages/*
+
+# Dependencias revisadas que requieren ejecutar su postinstall durante el
+# build de imágenes: Prisma genera el cliente y Sharp descarga su binario.
+allowBuilds:
+  "@nestjs/core": true
+  "@prisma/engines": true
+  "msgpackr-extract": true
+  "prisma": true
+  "sharp": true

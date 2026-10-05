@@ -1,0 +1,3 @@
+# These fictitious byte-integrity fixtures have pinned SHA-256 and lengths.
+# Do not change line endings on checkout (including on Windows).
+migration/fixtures/history-bundle/** -text

@@ -1,0 +1,27 @@
+{
+  "schemaVersion": "factuez.history-normalized.v1",
+  "environment": "BETA", "originSystem": "RESTOAPP",
+  "rows": [
+    {
+      "issuerRuc": "00000000000", "companyId": 999,
+      "type": "03", "series": "BQ01", "number": "1", "issueDate": "2026-10-01T10:00:00-05:00",
+      "currencyCode": "PEN", "originId": "FIXTURE-HISTORICO-1-NO-REAL",
+      "amounts": { "taxableAmount": "1.00", "exemptAmount": "0.00", "unaffectedAmount": "0.00", "freeAmount": "0.00", "discountTotal": "0.00", "igvAmount": "0.18", "iscAmount": "0.00", "otherTaxesAmount": "0.00", "payableAmount": "1.18" },
+      "tax": [{ "taxSchemeId": "1000", "taxName": "IGV", "taxableAmount": "1.00", "taxAmount": "0.18" }],
+      "artifacts": [
+        { "kind": "SIGNED_XML", "originalName": "fixture.xml", "sizeBytes": 147, "sha256": "40dc4ee2573df382edb7cc15b8a33aa62f0dd71e3a232ab424e6555654369c4a" },
+        { "kind": "CDR_XML", "originalName": "fixture.xml", "sizeBytes": 147, "sha256": "f67f713a408485b3e9fb837b567062724326fd82e197f581a5892d66d5cc51fd" }
+      ],
+      "ownIssuerMapping": { "issuerRuc": "00000000000", "companyId": 999, "branchId": "90000000-0000-4000-8000-000000000001", "emissionPointId": "90000000-0000-4000-8000-000000000002", "seriesCounterId": "90000000-0000-4000-8000-000000000003", "type": "03", "series": "BQ01" }
+    },
+    {
+      "issuerRuc": "00000000000", "companyId": 999,
+      "type": "03", "series": "BQ01", "number": "3", "issueDate": "2026-10-01T11:00:00-05:00",
+      "currencyCode": "PEN", "originId": "FIXTURE-HISTORICO-3-NO-REAL",
+      "amounts": { "taxableAmount": "2.00", "exemptAmount": "0.00", "unaffectedAmount": "0.00", "freeAmount": "0.00", "discountTotal": "0.00", "igvAmount": "0.36", "iscAmount": "0.00", "otherTaxesAmount": "0.00", "payableAmount": "2.36" },
+      "tax": [{ "taxSchemeId": "1000", "taxName": "IGV", "taxableAmount": "2.00", "taxAmount": "0.36" }],
+      "artifacts": [],
+      "ownIssuerMapping": { "issuerRuc": "00000000000", "companyId": 999, "branchId": "90000000-0000-4000-8000-000000000001", "emissionPointId": "90000000-0000-4000-8000-000000000002", "seriesCounterId": "90000000-0000-4000-8000-000000000003", "type": "03", "series": "BQ01" }
+    }
+  ]
+}
