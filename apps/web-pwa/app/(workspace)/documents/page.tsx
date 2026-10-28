@@ -16,10 +16,11 @@ import {
 import { DocumentTable } from "../../../features/workspace/document-table";
 import type { DocumentPage } from "../../../features/workspace/types";
 export default function DocumentsPage() {
-  const { branchId, companyId } = useWorkspace();
+  const { branchId, companyId, catalogSource } = useWorkspace();
   const [search, setSearch] = useState("");
   const [query, setQuery] = useState("");
   const [page, setPage] = useState(1);
+  useEffect(() => { setPage(1); }, [branchId, companyId, catalogSource]);
   useEffect(() => {
     const timer = window.setTimeout(() => {
       setQuery(search.trim());
@@ -27,7 +28,7 @@ export default function DocumentsPage() {
     }, 350);
     return () => window.clearTimeout(timer);
   }, [search]);
-  const params = new URLSearchParams({ page: String(page), q: query });
+  const params = new URLSearchParams({ page: String(page), q: query, dataSource: catalogSource });
   if (branchId) params.set("branchId", branchId);
   if (companyId) params.set("companyId", companyId);
   const { data, error, reload } = useResource<DocumentPage>(

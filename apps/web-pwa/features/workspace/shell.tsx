@@ -11,6 +11,7 @@ import {
   Users,
   ShieldCheck,
   KeyRound,
+  Plug,
   LogOut,
   Moon,
   Sun,
@@ -50,8 +51,15 @@ import {
   DialogTitle,
 } from "@factuez/ui/components/dialog";
 import { useWorkspace } from "./provider";
+import { canManageIntegrations } from "../b2b/integration-access";
+import { CATALOG_VIEW_LABELS, type CatalogView } from './catalog-model';
 import { Empty, ErrorState, Loading, rolesText } from "./common";
 const menu = [
+  { href: '/integrations', title: 'Conexiones e integraciones', icon: Plug, permission: 'setup.manage', group: 'Conexiones' },
+  { href: '/ti-guide', title: 'Guía para TI', icon: FileText, permission: 'setup.manage', group: 'Administración' },
+  { href: '/api-docs', title: 'Documentación API', icon: FileText, permission: 'setup.manage', group: 'Administración' },
+  { href: '/received', title: 'Documentos recibidos', icon: FileText, permission: 'report.view', group: 'Documentos' },
+  { href: '/print-settings', title: 'Formatos y logos', icon: FileText, permission: 'setup.manage', group: 'Administración' },
   { href: '/shadow-lab', title: 'Modo sombra (pruebas)', icon: FlaskConical, permission: 'sunat.configure', group: 'Administración' },
   { href: '/fiscal-lab', title: 'Laboratorio fiscal Beta', icon: FlaskConical, permission: 'sunat.configure', group: 'Administración' },
   { href: '/batches', title: 'Resúmenes y bajas', icon: FileText, permission: 'sunat.configure', group: 'Documentos' },
@@ -115,6 +123,8 @@ export function WorkspaceShell({ children }: { children: ReactNode }) {
     restoreError,
     retryRestore,
     catalog,
+    catalogSource,
+    setCatalogSource,
     branchId,
     companyId,
     setCompany,
@@ -142,9 +152,12 @@ export function WorkspaceShell({ children }: { children: ReactNode }) {
   }
   if (!user && restoreError) return <main className="p-8"><ErrorState message={restoreError} /><Button onClick={retryRestore}>Reintentar sesión</Button></main>;
   if (!user || restoring) return <Loading />;
+  const integrationsAllowed = canManageIntegrations(user, can);
   const current = menu.find(
     (item) => item.href === pathname || pathname.startsWith(`${item.href}/`),
   );
+  const selectedCompany = catalog?.companies.find(company => String(company.id) === companyId);
+  const branches = catalog?.branches.filter(branch => !companyId || String(branch.companyId) === companyId) ?? [];
   return (
     <SidebarProvider
       style={{ "--sidebar-width": "15rem" } as React.CSSProperties}
@@ -155,7 +168,7 @@ export function WorkspaceShell({ children }: { children: ReactNode }) {
           <Fuel className="hidden size-5 group-data-[collapsible=icon]:block" />
         </SidebarHeader>
         <SidebarContent>
-          {["Operación", "Documentos", "Administración"].map((group) => (
+          {["Operación", "Conexiones", "Documentos", "Administración"].filter(group => group !== "Conexiones" || integrationsAllowed).map((group) => (
             <SidebarGroup key={group}>
               <SidebarGroupLabel className="mb-2 text-[10px] uppercase tracking-[0.16em] text-slate-400">
                 {group}
@@ -164,7 +177,7 @@ export function WorkspaceShell({ children }: { children: ReactNode }) {
                 <SidebarMenu>
                   {menu
                     .filter(
-                      (item) => item.group === group && can(item.permission) && (item.href !== '/shadow-lab' || user.scope.kind === 'GLOBAL' && user.roles.includes('ADMIN')),
+                      (item) => item.group === group && can(item.permission) && (item.href !== '/integrations' || integrationsAllowed) && (item.href !== '/shadow-lab' || user.scope.kind === 'GLOBAL' && user.roles.includes('ADMIN')),
                     )
                     .map((item) => (
                       <SidebarMenuItem key={item.href}>
@@ -172,11 +185,15 @@ export function WorkspaceShell({ children }: { children: ReactNode }) {
                           asChild
                           isActive={pathname === item.href}
                           tooltip={item.title}
-                          className="h-11"
+                          className={item.href === '/integrations' ? "min-h-11 h-auto py-2 group-data-[collapsible=icon]:min-h-0 [&>span:last-child]:whitespace-normal [&>span:last-child]:leading-snug" : "h-11"}
                         >
                           <Link
                             href={item.href}
+                            target={item.href === '/api-docs' ? '_blank' : undefined}
+                            rel={item.href === '/api-docs' ? 'noopener noreferrer' : undefined}
+                            prefetch={item.href === '/api-docs' ? false : undefined}
                             onClick={(event) => {
+                              if (item.href === '/api-docs') return;
                               if (dirty) {
                                 event.preventDefault();
                                 confirm(() => {
@@ -240,9 +257,27 @@ export function WorkspaceShell({ children }: { children: ReactNode }) {
             {current?.title}
           </span>
           <div className="ml-auto flex flex-wrap items-center justify-end gap-2 sm:gap-3">
+            {integrationsAllowed && <Button variant="outline" size="sm" asChild>
+              <Link href="/integrations" aria-label="Abrir conexiones e integraciones" aria-current={pathname === '/integrations' ? 'page' : undefined} onClick={event => {
+                if (dirty) {
+                  event.preventDefault();
+                  confirm(() => { setDirty(false); router.push('/integrations'); });
+                }
+              }}><Plug aria-hidden="true" className="size-4" />Conexiones</Link>
+            </Button>}
+            {catalog && <div className="flex items-center gap-2">
+              <span className="text-xs text-muted-foreground">Catálogo</span>
+              <Select value={catalogSource} onValueChange={value => confirm(() => setCatalogSource(value as CatalogView))}>
+                <SelectTrigger aria-label="Fuente del catálogo" className="w-40 sm:w-48"><SelectValue /></SelectTrigger>
+                <SelectContent>{(Object.keys(CATALOG_VIEW_LABELS) as CatalogView[]).map(source =>
+                  <SelectItem key={source} value={source}>{CATALOG_VIEW_LABELS[source]}</SelectItem>,
+                )}</SelectContent>
+              </Select>
+            </div>}
             {catalog && (
               <Select
-                value={companyId || "all"}
+                value={companyId || (user.scope.kind === 'GLOBAL' ? 'all' : undefined)}
+                disabled={user.scope.kind !== 'GLOBAL' && catalog.companies.length === 1}
                 onValueChange={(value) =>
                   confirm(() => setCompany(value === "all" ? "" : value))
                 }
@@ -255,20 +290,21 @@ export function WorkspaceShell({ children }: { children: ReactNode }) {
                 </SelectTrigger>
                 <SelectContent>
                   {user.scope.kind === "GLOBAL" && (
-                    <SelectItem value="all">Todos los emisores</SelectItem>
+                    <SelectItem value="all">Consolidado (todo el alcance)</SelectItem>
                   )}
                   {catalog.companies.map((company) => (
                     <SelectItem key={company.id} value={String(company.id)}>
                       {company.ruc} · {company.legalName}
+                      {company.source === 'SYNTHETIC' ? ' · QA' : ''}
                     </SelectItem>
                   ))}
                 </SelectContent>
               </Select>
             )}
-            {catalog &&
-              (catalog.branches.length > 1 || user.scope.kind === "GLOBAL" ? (
+            {catalog && (
                 <Select
-                  value={branchId || "all"}
+                  value={branchId || (user.scope.kind === 'GLOBAL' ? 'all' : undefined)}
+                  disabled={user.scope.kind !== 'GLOBAL' && branches.length === 1}
                   onValueChange={(value) =>
                     confirm(() => setBranch(value === "all" ? "" : value))
                   }
@@ -278,39 +314,27 @@ export function WorkspaceShell({ children }: { children: ReactNode }) {
                     className="w-44 sm:w-56"
                   >
                     <Building2 className="size-4 text-muted-foreground" />
-                    <SelectValue />
+                    <SelectValue placeholder="Selecciona sede" />
                   </SelectTrigger>
                   <SelectContent>
                     {user.scope.kind === "GLOBAL" && (
                       <SelectItem value="all">Todas las sedes</SelectItem>
                     )}
-                    {catalog.branches
-                      .filter(
-                        (branch) =>
-                          !companyId || String(branch.companyId) === companyId,
-                      )
-                      .map((branch) => (
+                    {branches.map((branch) => (
                         <SelectItem value={branch.id} key={branch.id}>
                           {branch.name}
+                          {branch.source === 'SYNTHETIC' ? ' · QA' : ''}
                         </SelectItem>
                       ))}
                   </SelectContent>
                 </Select>
-              ) : (
-                <Badge variant="outline" className="h-9">
-                  {catalog.branches[0]?.name ?? "Sin sede asignada"}
-                </Badge>
-              ))}
+              )}
             <Badge
               variant="outline"
               className="hidden border-amber-200 bg-amber-50 text-amber-900 sm:flex"
             >
               <FlaskConical className="mr-1 size-3" />
-              {(companyId
-                ? catalog?.companies.find(
-                    (company) => String(company.id) === companyId,
-                  )?.environment
-                : "Consolidado") ?? "Cargando"}
+              {selectedCompany ? `${selectedCompany.environment} · ${selectedCompany.source === 'SYNTHETIC' ? 'Laboratorio QA' : 'Negocio'}` : 'Consolidado autorizado'}
             </Badge>
             <Button
               variant="ghost"
@@ -323,9 +347,13 @@ export function WorkspaceShell({ children }: { children: ReactNode }) {
           </div>
         </header>
         <div className="border-b border-amber-200 bg-amber-50 px-4 py-2 text-xs leading-relaxed text-amber-900 sm:px-7">
-          {catalog?.capabilities.demoData ? "Datos de demostración · " : ""}
-          Emisión local de prueba. Firma y envío a SUNAT pendientes de
-          habilitación.
+          {selectedCompany?.environment === 'PRODUCTION'
+            ? 'Producción · El estado fiscal de cada comprobante se confirma con su CDR.'
+            : selectedCompany?.environment === 'BETA'
+              ? 'Ambiente de pruebas Beta · Sin validez tributaria.'
+              : 'Vista consolidada de las empresas y sedes autorizadas.'}
+          {catalogSource !== 'BUSINESS' && <> {CATALOG_VIEW_LABELS[catalogSource]} · Incluye datos de pruebas.</>}
+
         </div>
         <div className="mx-auto w-full max-w-[1600px] p-4 sm:p-7 lg:p-8">
           {catalogError ? (
@@ -335,13 +363,15 @@ export function WorkspaceShell({ children }: { children: ReactNode }) {
             />
           ) : !catalog ? (
             <Loading />
-          ) : current && !can(current.permission) ? (
+          ) : current && (!can(current.permission) || current.href === '/integrations' && !integrationsAllowed) ? (
             <Empty
               title="Acceso no autorizado"
               description="Tu cuenta no tiene permiso para este módulo."
             />
           ) : (
-            <div key={`${companyId}:${branchId}`}>{children}</div>
+            <><div className="mb-4 text-xs text-muted-foreground" role="status">
+              {!catalog.companies.length && `No hay emisores en la vista ${CATALOG_VIEW_LABELS[catalogSource]}. Cambia Fuente del catálogo para consultar las otras fuentes autorizadas.`}
+            </div><div key={`${catalogSource}:${companyId}:${branchId}`}>{children}</div></>
           )}
         </div>
       </SidebarInset>

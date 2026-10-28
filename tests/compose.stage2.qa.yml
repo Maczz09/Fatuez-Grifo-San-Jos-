@@ -22,6 +22,7 @@ services:
       CLIENT_INTAKE_QA_ENABLED: "true"
       # QA already initialized: a service update must not run demo seeding again.
       FACTUEZ_DEMO_SEED: "false"
+      STATION_MASTER_CRUD_ENABLED: "true"
   sunat-service:
     image: factuez-stage2-qa/sunat-service:local
     pull_policy: never
@@ -61,6 +62,7 @@ services:
       DB_HOST: postgres
       DB_USER: factuez_demo_app
       DB_NAME: factuez_mailer_qa
+      MAILER_DATABASE_NAME: factuez_mailer_qa
       DB_PASSWORD_FILE: /run/secrets/demo_db_password
       REDIS_PASSWORD_FILE: /run/secrets/redis_password
       LOCAL_MAIL_QA_ENABLED: "true"

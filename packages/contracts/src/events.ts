@@ -1,3 +1,5 @@
+import type { FrozenPrintPresentationV1, PrintOperationSnapshot } from './print-presentation';
+
 export const QueueNames = {
   sunatSubmissions: "sunat-submissions",
   billingStatusUpdates: "billing-status-updates",
@@ -68,6 +70,9 @@ export interface FiscalDocumentSnapshot {
   currencyCode: CurrencyCode;
   /** Opcional sólo por compatibilidad histórica; preparación real de 01 lo exige. */
   paymentTerms?: FiscalPaymentTermsSnapshot;
+  /** Opcional para eventos antiguos. Sólo presentación; congelada por Billing. */
+  printPresentation?: FrozenPrintPresentationV1;
+  printOperation?: PrintOperationSnapshot;
   operationTypeCode: string;
   issuer: FiscalPartySnapshot & {
     tradeName?: string;

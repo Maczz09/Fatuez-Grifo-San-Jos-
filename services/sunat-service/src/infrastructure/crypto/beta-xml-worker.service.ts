@@ -19,7 +19,7 @@ export class BetaXmlWorkerService {
         let settled = false;
         const finish = (result?: ReturnType<typeof prepareBetaXml>, temporary = false) => {
           if (settled) return; settled = true; clearTimeout(timer);
-          void worker.terminate().catch(() => undefined).then(() => result ? resolve({ ...result, zip: Buffer.from(result.zip) }) :
+          void worker.terminate().catch(() => undefined).then(() => result ? resolve({ ...result, zip: Buffer.from(result.zip), individualZip: result.individualZip ? Buffer.from(result.individualZip) : undefined }) :
             reject(temporary ? new LocalPreparationUnavailableError('Worker criptográfico interrumpido') : new BadRequestException('Firma/contexto Beta inválido')));
         };
         const timer = setTimeout(() => finish(undefined, true), 10000);

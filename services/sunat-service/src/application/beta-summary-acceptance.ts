@@ -127,7 +127,7 @@ function validateRecord(record: BetaSummaryAcceptedBatch, doc: FiscalDocumentSna
 }
 
 /** fflate descomprime, pero no basta para acreditar CRC ni coherencia central/local. */
-function zipXmlMetadata(zip: Buffer, expectedName: string): { crc: number; size: number } {
+export function betaCdrZipMetadata(zip: Buffer, expectedName: string): { crc: number; size: number } {
   try {
     if (zip.length < 22 || zip.length > 4 * 1024 * 1024) reject('CDR_INVALID');
     // EOCD sin comentarios/trailing bytes en este perfil clásico.
@@ -169,7 +169,7 @@ function zipXmlMetadata(zip: Buffer, expectedName: string): { crc: number; size:
     return entries.find(e => e.name === expectedName)!;
   } catch { reject('CDR_INVALID'); }
 }
-function crc32(bytes: Buffer): number {
+export function betaCdrCrc32(bytes: Buffer): number {
   let crc = 0xffffffff;
   for (const byte of bytes) {
     crc ^= byte;
@@ -179,11 +179,11 @@ function crc32(bytes: Buffer): number {
 }
 function cdrDetails(zip: Buffer, evidence: FiscalAcceptanceEvidence) {
   if (evidence.source.kind !== 'CDR_SUMMARY') reject('FISCAL_EVIDENCE_INVALID');
-  const fileName = `R-${evidence.issuerRuc}-${evidence.source.identifier}.xml`, metadata = zipXmlMetadata(zip, fileName);
+  const fileName = `R-${evidence.issuerRuc}-${evidence.source.identifier}.xml`, metadata = betaCdrZipMetadata(zip, fileName);
   let parsed: ReturnType<typeof parseCdrZip>;
   try { parsed = parseCdrZip(zip, { fileName, issuerRuc: evidence.issuerRuc, reference: evidence.source.identifier }); }
   catch { reject('CDR_INVALID'); }
-  if (parsed.xml.length !== metadata.size || crc32(parsed.xml) !== metadata.crc) reject('CDR_INVALID');
+  if (parsed.xml.length !== metadata.size || betaCdrCrc32(parsed.xml) !== metadata.crc) reject('CDR_INVALID');
   const root = strictXml(parsed.xml);
   if (text(one(one(root, CAC_NS, 'SenderParty'), CAC_NS, 'PartyIdentification'), CBC_NS, 'ID', 11) !== '20131312955') reject('CDR_INVALID');
   if (text(one(one(root, CAC_NS, 'ReceiverParty'), CAC_NS, 'PartyIdentification'), CBC_NS, 'ID', 11) !== evidence.issuerRuc) reject('CDR_INVALID');

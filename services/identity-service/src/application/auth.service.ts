@@ -25,6 +25,7 @@ import { readFileSync } from "node:fs";
 import { PasswordService } from "./password.service";
 import { PrismaService } from "../infrastructure/prisma.service";
 import { BrowserSessionStore } from './browser-session.store';
+import { UserPermissionsService } from './user-permissions.service';
 
 const databasePermissionToApiCode: Record<string, PermissionCode> = {
   SETUP_MANAGE: PermissionCodes.SETUP_MANAGE,
@@ -72,6 +73,7 @@ export class AuthService {
     private readonly prisma: PrismaService,
     private readonly passwords: PasswordService,
     @Optional() private readonly browserSessions?: BrowserSessionStore,
+    @Optional() private readonly userPermissions?: UserPermissionsService,
   ) {}
 
   async login(username: string, password: string) {
@@ -119,7 +121,7 @@ export class AuthService {
     return this.tokenForUser(user, browserSessionId);
   }
 
-  private tokenForUser(user: AuthenticatedUserRecord, browserSessionId?: string) {
+  private async tokenForUser(user: AuthenticatedUserRecord, browserSessionId?: string) {
     const activeRoles = user.roles
       .map(({ role }) => role)
       .filter((role) => role.active);
@@ -130,11 +132,11 @@ export class AuthService {
     ];
     const permissions = [
       ...new Set(
-        activeRoles.flatMap((role) =>
+        [...activeRoles.flatMap((role) =>
           role.permissions.map(
             ({ permission }) => databasePermissionToApiCode[permission.code],
           ),
-        ),
+        ), ...(this.userPermissions ? await this.userPermissions.effective(user.id) : [])],
       ),
     ].filter((permission): permission is PermissionCode => Boolean(permission));
 

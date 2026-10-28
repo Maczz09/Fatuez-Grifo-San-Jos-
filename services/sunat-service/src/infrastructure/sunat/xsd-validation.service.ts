@@ -1,6 +1,7 @@
 import { Injectable, BadRequestException, ServiceUnavailableException } from '@nestjs/common';
 import { spawn } from 'node:child_process';
-import { readFile, mkdtemp, mkdir, writeFile, realpath, stat } from 'node:fs/promises';
+import { constants } from 'node:fs';
+import { readFile, mkdtemp, mkdir, writeFile, realpath, stat, access } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join, resolve, relative, isAbsolute, dirname } from 'node:path';
@@ -95,6 +96,9 @@ export class XsdValidationService {
     // Sólo contiene schemas públicos, no XML de clientes ni certificados. Docker elimina
     // el temporal propio al recrear el contenedor; nunca se borra un directorio del usuario.
     return paths;
+  }
+  async configured(): Promise<boolean> {
+    try { await this.bundle(); await access('/usr/bin/xmllint', constants.X_OK); return true; } catch { return false; }
   }
   async validate(input: string | Buffer, kind: Kind) {
     if (!Object.hasOwn(NAMESPACES, kind)) throw new BadRequestException('Perfil XSD desconocido');

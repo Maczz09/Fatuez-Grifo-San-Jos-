@@ -139,7 +139,7 @@ function deliveryFixture() {
   return { service, fetchMock, fiscal, document, artifact, read };
 }
 describe("P2: descarga autenticada entre servicios", () => {
-  it("revalida con Billing antes de leer un archivo y conserva RUC en nombre", async () => {
+  it("revalida con Billing antes de generar el PDF y conserva RUC en nombre", async () => {
     const f = deliveryFixture();
     const result = await f.service.download(
       documentId,
@@ -148,6 +148,7 @@ describe("P2: descarga autenticada entre servicios", () => {
     );
     expect(result.fileName).toBe("00000000000-03-B001-1-ticket-PRUEBA.pdf");
     expect(result.bytes.subarray(0, 5).toString()).toBe("%PDF-");
+    expect(result.bytes.length).toBeGreaterThan(2000);
     expect(result.bytes.toString("latin1")).not.toContain("Max Garcia");
     expect(f.fetchMock.mock.calls[0]).toMatchObject([
       expect.stringContaining(documentId),
@@ -159,9 +160,8 @@ describe("P2: descarga autenticada entre servicios", () => {
         redirect: "error",
       },
     ]);
-    expect(f.artifact.mock.calls[0][0]).toMatchObject({
-      where: { documentId_kind: { documentId, kind: "PDF_TICKET_80MM" } },
-    });
+    expect(f.artifact).not.toHaveBeenCalled();
+    expect(f.read).not.toHaveBeenCalled();
   });
   it.each([401, 403, 404, 500])(
     "deniega respuesta %i de Billing sin leer almacenamiento",
@@ -221,16 +221,13 @@ describe("P2: descarga autenticada entre servicios", () => {
     ).rejects.toThrow("representación fiscal");
     expect(f.read).not.toHaveBeenCalled();
   });
-  it("archivo pendiente o corrupto no simula descarga exitosa", async () => {
+  it("no depende del PDF permanente antiguo, ausente o dañado para mostrar formato vigente", async () => {
     const f = deliveryFixture();
     f.artifact.mockResolvedValueOnce(null as never);
-    await expect(
-      f.service.download(documentId, "a4", "Bearer qa.token"),
-    ).rejects.toThrow("preparación");
+    expect((await f.service.download(documentId, "a4", "Bearer qa.token")).bytes.subarray(0, 5).toString()).toBe('%PDF-');
     f.read.mockRejectedValueOnce(new Error("integridad"));
-    await expect(
-      f.service.download(documentId, "a4", "Bearer qa.token"),
-    ).rejects.toThrow("verificar el archivo");
+    expect((await f.service.download(documentId, "a4", "Bearer qa.token")).bytes.subarray(0, 5).toString()).toBe('%PDF-');
+    expect(f.artifact).not.toHaveBeenCalled(); expect(f.read).not.toHaveBeenCalled();
   });
 });
 describe("P2: archivos privados y replay", () => {

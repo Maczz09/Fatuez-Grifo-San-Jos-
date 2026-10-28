@@ -40,8 +40,8 @@ import type {
   DocumentPage,
 } from "../../../features/workspace/types";
 export default function DashboardPage() {
-  const { branchId, companyId, catalog, can, liveStatus } = useWorkspace();
-  const params = new URLSearchParams();
+  const { branchId, companyId, catalog, catalogSource, can, liveStatus } = useWorkspace();
+  const params = new URLSearchParams({ dataSource: catalogSource });
   if (branchId) params.set("branchId", branchId);
   if (companyId) params.set("companyId", companyId);
   const filter = `?${params}`;

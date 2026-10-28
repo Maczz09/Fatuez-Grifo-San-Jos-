@@ -110,6 +110,45 @@ function serviceFixture() {
   return { service, audit, transaction, upsert, seal };
 }
 describe("configuración por emisor sin transmisión", () => {
+  it("retira SOL preservando GRE, revisión y auditoría sin revelar secretos", async () => {
+    const f = serviceFixture();
+    await f.service.save("1", "BETA", { expectedRevision: 0, sol: { username: "QAUSER", password: "ONLY-QA" }, gre: { clientId: "QA", clientSecret: "ONLY-QA-GRE" } }, "Bearer QA.token", admin.sub);
+    const result = await f.service.save("1", "BETA", { expectedRevision: 1, remove: ["sol"] }, "Bearer QA.token", admin.sub);
+    expect(result).toMatchObject({ revision: 2, solConfigured: false, greConfigured: true, fiscalTransmission: false });
+    expect(f.upsert.mock.calls[1][0].update).toMatchObject({ solUsernameCipher: null, solPasswordCipher: null });
+    expect(f.audit.mock.calls[1][0].data.fields).toEqual(["sol.remove"]);
+    expect(JSON.stringify(result)).not.toContain("ONLY-QA");
+    await expect(f.service.save("1", "BETA", { expectedRevision: 1, remove: ["gre"] }, "Bearer QA.token", admin.sub)).rejects.toThrow("cambió");
+    await expect(f.service.save("1", "BETA", { expectedRevision: 2, remove: ["sol"] }, "Bearer QA.token", admin.sub)).rejects.toThrow("no está configurado");
+  });
+  it("retira certificado y metadatos sin borrar registro ni historial", async () => {
+    const f = serviceFixture();
+    await f.service.save("1", "BETA", { expectedRevision: 0, certificate: { fileName: "QA.p12", base64: p12().toString("base64"), password } }, "Bearer QA.token", admin.sub);
+    const result = await f.service.save("1", "BETA", { expectedRevision: 1, remove: ["certificate"] }, "Bearer QA.token", admin.sub);
+    expect(result.certificate).toMatchObject({ configured: false, fingerprint: null, expiresAt: null, selfSigned: null });
+    expect(f.upsert.mock.calls[1][0].update).toMatchObject({ certificatePasswordCipher: null, certificateCipher: null, certificateStorageKey: null });
+    expect(result.revision).toBe(2);
+  });
+  it.each([[], ["invalid"], ["sol", "sol"], "sol", null])("rechaza retiros inválidos %j", async remove => {
+    const f = serviceFixture();
+    await expect(f.service.save("1", "BETA", { expectedRevision: 0, remove } as never, "Bearer QA.token", admin.sub)).rejects.toThrow();
+    expect(f.upsert).not.toHaveBeenCalled();
+  });
+  it("rechaza retirar y reemplazar un grupo en la misma solicitud", async () => {
+    const f = serviceFixture();
+    await expect(f.service.save("1", "BETA", { expectedRevision: 0, remove: ["sol"], sol: { username: "QAUSER", password: "ONLY-QA" } }, "Bearer QA.token", admin.sub)).rejects.toThrow("mismo grupo");
+    expect(f.seal).not.toHaveBeenCalled();
+  });
+  it("audita sólo metadatos del RUC y ambiente autorizado con paginado", async () => {
+    const count = vi.fn(async () => 11), findMany = vi.fn(async () => []);
+    const transaction = vi.fn(async (queries: Promise<unknown>[]) => Promise.all(queries));
+    const service = new FiscalConfigurationService({ fiscalConfigurationAudit: { count, findMany }, $transaction: transaction } as never, {} as never, {} as never);
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ companies: [{ id: 1, ruc: "00000000000" }] }))));
+    expect(await service.audit("1", "BETA", "Bearer QA", "2")).toMatchObject({ total: 11, page: 2, pageSize: 10 });
+    expect(findMany.mock.calls[0][0]).toMatchObject({ where: { issuerRuc: "00000000000", environment: "BETA" }, skip: 10, take: 10 });
+    expect(Object.keys(findMany.mock.calls[0][0].select).sort()).toEqual(["actorId", "fields", "id", "occurredAt", "revision"]);
+    await expect(service.audit("1", "BETA", "Bearer QA", "0")).rejects.toThrow("Página inválida");
+  });
   it("valida y cifra el PKCS#12 completo sin devolver su contenido", async () => {
     const f = serviceFixture();
     const bytes = p12();

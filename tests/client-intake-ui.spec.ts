@@ -7,7 +7,7 @@ import { intakeMapCsv } from "../apps/web-pwa/features/workspace/client-intake-t
 
 const access = vi.hoisted(() => ({ allowed: true, scope: "GLOBAL", roles: ["ADMIN"], api: vi.fn() }));
 vi.mock("../apps/web-pwa/features/workspace/provider", () => ({ useWorkspace: () => ({
-  user: { sub: "00000000-0000-4000-8000-000000000951", scope: { kind: access.scope }, roles: access.roles },
+  user: { sub: "00000000-0000-4000-8000-000000000951", scope: { kind: access.scope }, roles: access.roles, permissions: access.allowed ? ['setup.manage', 'series.manage'] : [] },
   can: () => access.allowed, api: access.api, setDirty: vi.fn(), reloadCatalog: vi.fn(),
   branchId: "", companyId: "", catalog: { companies: [], branches: [], emissionPoints: [], products: [] },
 }) }));
@@ -38,8 +38,8 @@ describe("preparación cliente shadcn: vista, filtros y guard de acceso", () => 
     expect(render(StationsPage)).not.toContain("Entrega del cliente");
     expect(access.api).not.toHaveBeenCalled();
   });
-  it("el administrador ve el tab pero los datos sólo se solicitan al activarlo", () => {
-    expect(render(StationsPage)).toContain("Entrega del cliente");
+  it("la pestaña interna se retiró de la vista operativa también para el administrador", () => {
+    expect(render(StationsPage)).not.toContain("Entrega del cliente");
     const html = render(ClientIntakeWorkspace);
     expect(html).toContain("Cargando información");
     expect(html).not.toContain("20175642341");

@@ -11,7 +11,8 @@ export type BetaDispatchRow<T extends BetaDispatchContext = FiscalDocumentSnapsh
   snapshot: T; ticket: string | null };
 export type BetaPrepared = { fileName: string; zip: Buffer; sha256: string; reference: string; revision: number };
 export type BetaCdr = { trusted: boolean; status: 'ACCEPTED' | 'ACCEPTED_WITH_OBSERVATIONS' | 'REJECTED';
-  code: string; description: string; notes: string[] };
+  code: string; description: string; notes: string[];
+  receiptSummary?: { summaryIdentifier: string; summaryXmlSha256: string; summaryZipSha256: string; documentSnapshotSha256: string } };
 /** Puertos internos: ni HTTP del cliente ni un booleano del formulario autorizan esta ejecución. */
 export interface BetaDispatchPorts<T extends BetaDispatchContext = FiscalDocumentSnapshot> {
   authorize(row: BetaDispatchRow<T>): Promise<void>;
@@ -27,12 +28,12 @@ export interface BetaDispatchPorts<T extends BetaDispatchContext = FiscalDocumen
   cdr(row: BetaDispatchRow<T>, prepared: BetaPrepared, bytes: Buffer): Promise<BetaCdr>;
 }
 
-/** Vertical completa desacoplada, verificada con puertos ficticios. El wiring real conserva su gate cerrado. */
+/** Vertical compartida, verificada con puertos ficticios. Cada ambiente exige su autorización privada. */
 export class BetaDispatchPipeline<T extends BetaDispatchContext = FiscalDocumentSnapshot> {
-  constructor(private readonly ports: BetaDispatchPorts<T>) {}
+  constructor(private readonly ports: BetaDispatchPorts<T>, private readonly environment: 'BETA' | 'PRODUCTION' = 'BETA') {}
   async run(input: BetaDispatchRow<T>) {
-    if (input.snapshot.environment !== 'BETA' || !['01', '03', '07', '08', 'RC', 'RA'].includes(input.snapshot.documentTypeCode))
-      throw new Error('Sólo 01/03/07/08/RC/RA BETA; producción no tiene ruta');
+    if (input.snapshot.environment !== this.environment || !(this.environment === 'BETA' ? ['01', '03', '07', '08', 'RC', 'RA'] : ['01', '03']).includes(input.snapshot.documentTypeCode))
+      throw new Error(this.environment === 'BETA' ? 'Sólo 01/03/07/08/RC/RA BETA; producción no tiene ruta Beta' : 'Documento fuera del perfil de despacho de producción autorizado');
     if (!['AWAITING_AUTHORIZATION', 'RETRY_PREPARATION', 'PREPARED', 'WAITING_TICKET'].includes(input.phase)) return;
     // Antes de leer una clave o artefacto, y otra vez inmediatamente antes de cada llamada externa.
     await this.ports.authorize(input);

@@ -9,6 +9,7 @@ import {
   UseGuards,
 } from "@nestjs/common";
 import { PermissionCodes } from "@factuez/contracts";
+import { UserPermissionsService } from './application/user-permissions.service';
 import {
   type CreateUserInput,
   type UpdateUserAccessInput,
@@ -23,12 +24,23 @@ import {
 @Controller("api/v1")
 @UseGuards(IdentityPermissionGuard)
 export class UsersController {
-  constructor(private readonly users: UserAdministrationService) {}
+  constructor(private readonly users: UserAdministrationService, private readonly extra: UserPermissionsService) {}
+  @Get('users/:id/permissions')
+  @RequiredPermissions(PermissionCodes.USER_MANAGE, PermissionCodes.ROLE_MANAGE)
+  userPermissions(@Param('id') id: string, @Req() request: AuthenticatedRequest) { return this.extra.status(id, request.user!); }
+  @Patch('users/:id/permissions')
+  @RequiredPermissions(PermissionCodes.USER_MANAGE, PermissionCodes.ROLE_MANAGE)
+  updateUserPermissions(@Param('id') id: string, @Body() body: unknown, @Req() request: AuthenticatedRequest) { return this.extra.update(id, body, request.user!); }
 
   @Get("roles")
   @RequiredPermissions(PermissionCodes.ROLE_MANAGE)
   roles(@Req() request: AuthenticatedRequest) {
     return this.users.listRoles(request.user!);
+  }
+  @Patch("roles/:code")
+  @RequiredPermissions(PermissionCodes.ROLE_MANAGE)
+  updateRole(@Param("code") code: string, @Body() body: unknown, @Req() request: AuthenticatedRequest) {
+    return this.users.updateRole(code, body, request.user!);
   }
 
   @Get("users")

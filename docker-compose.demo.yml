@@ -116,7 +116,10 @@ services:
       DB_PASSWORD_FILE: /run/secrets/demo_db_password
       PORT: "3002"
       FACTUEZ_DEMO_SEED: "true"
+      PRINT_SETTINGS_ENABLED: "true"
+      PRINT_BRANDING_ROOT: /data/print-branding
     secrets: *service-secrets
+    volumes: [factuez_print_branding:/data/print-branding]
     depends_on:
       migrate-billing: { condition: service_completed_successfully }
       identity-service: { condition: service_healthy }
@@ -137,6 +140,7 @@ services:
       APP_MASTER_KEY_FILE: /run/secrets/app_master_key
       INTERNAL_SERVICE_TOKEN_FILE: /run/secrets/internal_service_token
       ARTIFACTS_ROOT: /data/artifacts
+      PRINT_SETTINGS_ENABLED: "true"
       BILLING_INTERNAL_URL: http://billing-service:3002
       SUNAT_WORKER_CONCURRENCY: "1"
       IDENTITY_INTERNAL_URL: http://identity-service:3001
@@ -189,6 +193,7 @@ volumes:
   factuez_demo_postgres:
   factuez_demo_redis:
   factuez_demo_artifacts:
+  factuez_print_branding:
 
 secrets:
   demo_postgres_password:

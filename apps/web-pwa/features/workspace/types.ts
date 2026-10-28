@@ -99,4 +99,5 @@ export type Role = {
   description: string;
   permissions: string[];
   assignable: boolean;
+  editable?: boolean;
 };

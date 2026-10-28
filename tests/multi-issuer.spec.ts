@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { IssueDocumentService } from "../services/billing-service/src/application/issue-document.service";
 import { IssuanceQueryService } from "../services/billing-service/src/application/issuance-query.service";
 import { StationsController } from "../services/billing-service/src/stations.controller";
+import { StationAdminService } from "../services/billing-service/src/application/station-admin.service";
 import { DocumentIssuedConsumer } from "../services/sunat-service/src/application/document-issued.consumer";
 import type { AccessScope } from "../packages/contracts/src/authorization";
 const branchA = "10000000-0000-4000-8000-000000000001";
@@ -13,7 +14,7 @@ const counterA = "40000000-0000-4000-8000-000000000001";
 const counterB = "40000000-0000-4000-8000-000000000002";
 const actorId = "30000000-0000-4000-8000-000000000001";
 const globalRequest = {
-  user: { sub: actorId, scope: { kind: "GLOBAL" } },
+  user: { sub: actorId, scope: { kind: "GLOBAL" }, roles: ['ADMIN'], permissions: ['setup.manage', 'series.manage'] },
 } as never;
 const input = {
   emissionPointId: pointA,
@@ -44,6 +45,7 @@ function billingFixture() {
       ruc: "20450819230",
       legalName: "Emisor QA A",
       environment: "BETA",
+      active: true,
       taxAddress: "Dirección QA",
       ubigeo: "200101",
     },
@@ -52,6 +54,7 @@ function billingFixture() {
       ruc: "00000000000",
       legalName: "Emisor QA B FICTICIO",
       environment: "BETA",
+      active: true,
       taxAddress: "Dirección QA",
       ubigeo: "200101",
     },
@@ -141,7 +144,7 @@ function billingFixture() {
     idempotencyKey: "QA",
     correlationId: "QA",
   });
-  return { service, tx, points, counters, documents, events, context };
+  return { service, tx, companies, points, counters, documents, events, context };
 }
 describe("Multi-emisor privado configurable", () => {
   afterEach(() => vi.unstubAllEnvs());
@@ -180,6 +183,24 @@ describe("Multi-emisor privado configurable", () => {
     f.tx.companySettings.findUniqueOrThrow.mockResolvedValueOnce({ id: 1, ruc: '20450819230', legalName: 'NO REAL', environment: 'PRODUCTION' } as any);
     await expect(f.service.execute(input, f.context())).rejects.toThrow('producción bloqueada');
     expect(f.tx.seriesCounter.update).not.toHaveBeenCalled();
+  });
+  it('emisor desactivado bloquea nuevas ventas sin consumir números ni crear Outbox', async () => {
+    const f = billingFixture(); f.companies[0].active = false;
+    await expect(f.service.execute(input, f.context())).rejects.toThrow();
+    expect(f.tx.seriesCounter.update).not.toHaveBeenCalled();
+    expect(f.tx.document.create).not.toHaveBeenCalled(); expect(f.tx.outboxEvent.create).not.toHaveBeenCalled();
+  });
+  it('la emisión se coordina con edición de maestros mediante locks ordenados y parametrizados', async () => {
+    vi.stubEnv('STATION_MASTER_CRUD_ENABLED', 'true');
+    const f = billingFixture(); const raw = vi.fn(async () => [{ companyId: 1, branchId: branchA }]);
+    Object.assign(f.tx, { $queryRawUnsafe: raw });
+    await f.service.execute(input, f.context());
+    const statements = raw.mock.calls.map((call: any[]) => call[0]);
+    expect(statements.slice(1).map(sql => sql.match(/FROM "(\w+)"/)[1])).toEqual(['CompanySettings', 'Branch', 'EmissionPoint', 'SeriesCounter']);
+    expect(statements.slice(1, 4).every(sql => sql.endsWith('FOR SHARE'))).toBe(true);
+    expect(statements[4]).toContain('FOR UPDATE');
+    expect(statements.every(sql => sql.includes('$1'))).toBe(true);
+    expect(statements.every(sql => !sql.includes(pointA) && !sql.includes('F001'))).toBe(true);
   });
   it("dos RUC usan F001-1 con counters, snapshots y eventos independientes; rechaza un emisor impuesto por el cliente", async () => {
     const f = billingFixture();
@@ -304,16 +325,18 @@ describe("Multi-emisor privado configurable", () => {
     ).rejects.toThrow("Emisor o sede no autorizados");
   });
   it("crear sede usa el emisor seleccionado y lo audita; no hay límite fijo de 21 sedes", async () => {
+    vi.stubEnv('STATION_MASTER_CRUD_ENABLED', 'true');
     const create = vi.fn(async ({ data }: any) => ({ id: branchB, ...data }));
     const audit = vi.fn(async () => ({}));
     const tx = {
-      companySettings: { findUnique: async () => ({ id: 2 }) },
+      $queryRawUnsafe: vi.fn(async () => []),
+      companySettings: { findUnique: async () => ({ id: 2, ruc: '00000000002', environment: 'BETA', active: true }) },
       branch: { create },
       configurationAudit: { create: audit },
     };
-    const controller = new StationsController({
+    const controller = new StationsController(new StationAdminService({
       $transaction: (work: any) => work(tx),
-    } as never);
+    } as never));
     await controller.create(
       { companyId: 2, code: "OTRA", name: "Otra sede" },
       globalRequest,
@@ -324,24 +347,26 @@ describe("Multi-emisor privado configurable", () => {
   it.each([0, 1])(
     "reasignación segura: %i puntos existentes",
     async (count) => {
+      vi.stubEnv('STATION_MASTER_CRUD_ENABLED', 'true');
       const update = vi.fn(async () => ({ id: branchA, companyId: 2 }));
       const lock = vi.fn(async () => []);
       const tx = {
         $queryRawUnsafe: lock,
-        companySettings: { findUnique: async () => ({ id: 2 }) },
+        companySettings: { findUnique: async ({ where }: any) => ({ id: where.id, ruc: '00000000002', environment: 'BETA', active: true }) },
         branch: {
-          findUnique: async () => ({ id: branchA, companyId: 1, active: true }),
+          findUnique: async () => ({ id: branchA, companyId: 1, active: true, masterRevision: 1 }),
+          findUniqueOrThrow: async () => ({ id: branchA, companyId: 1, active: true, masterRevision: 1 }),
           update,
         },
         emissionPoint: { count: async () => count },
         configurationAudit: { create: async () => ({}) },
       };
-      const controller = new StationsController({
+      const controller = new StationsController(new StationAdminService({
         $transaction: (work: any) => work(tx),
-      } as never);
+      } as never));
       const action = controller.assignIssuer(
         branchA,
-        { companyId: 2 },
+        { companyId: 2, expectedRevision: 1 },
         globalRequest,
       );
       if (count) {
@@ -381,6 +406,8 @@ describe("Multi-emisor privado configurable", () => {
       environment: "BETA",
     });
     expect(putUnsignedXml.mock.calls[0][1]).toContain("00000000000-01-F001-1");
+    // El worker conserva UBL pero ya no persiste PDF de consulta al emitir.
+    expect(putUnsignedXml).toHaveBeenCalledOnce();
     const legacyEvent = structuredClone(f.events[0]);
     delete legacyEvent.payload.environment;
     await expect(

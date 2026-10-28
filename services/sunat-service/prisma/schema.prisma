@@ -394,3 +394,29 @@ model InboxEvent {
   eventType   String   @db.VarChar(120)
   processedAt DateTime @default(now())
 }
+
+// Explicit per-issuer authority. Saving credentials never creates this record.
+model FiscalDispatchAuthorization {
+  issuerRuc String @db.Char(11)
+  environment SunatEnvironment
+  enabled Boolean @default(false)
+  profile String @db.VarChar(64)
+  credentialRevision Int
+  certificateFingerprint String @db.Char(64)
+  version Int @default(1)
+  actorId String @db.Uuid
+  registrationAttestedAt DateTime?
+  updatedAt DateTime @updatedAt
+  @@id([issuerRuc, environment])
+}
+model FiscalDispatchAudit {
+  id String @id @default(uuid()) @db.Uuid
+  issuerRuc String @db.Char(11)
+  environment SunatEnvironment
+  enabled Boolean
+  version Int
+  credentialRevision Int
+  actorId String @db.Uuid
+  occurredAt DateTime @default(now())
+  @@index([issuerRuc, environment, occurredAt])
+}

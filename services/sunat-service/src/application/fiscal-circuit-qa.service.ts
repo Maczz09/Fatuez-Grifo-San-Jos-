@@ -1,4 +1,4 @@
-import { Injectable, ConflictException, BadRequestException, ServiceUnavailableException, OnApplicationBootstrap, OnModuleDestroy } from '@nestjs/common';
+import { Injectable, ConflictException, BadRequestException, ServiceUnavailableException, OnApplicationBootstrap, OnModuleDestroy, Optional } from '@nestjs/common';
 import { Queue, Worker } from 'bullmq';
 import { readFileSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
@@ -13,12 +13,12 @@ import type { FiscalCircuitQa } from '../generated/prisma/client';
 import type { FiscalDocumentSnapshot } from '@factuez/contracts';
 import { limaIssueDate } from '@factuez/sunat-core';
 import { isDeepStrictEqual } from 'node:util';
-import { renderLocalDocumentPdf, type PrintFormat } from '@factuez/pdf-renderer';
 import { safeXml } from '../infrastructure/sunat/safe-xml';
 import { XsdValidationService, XSD_PROFILE, XSD_ARCHIVE_SHA256 } from '../infrastructure/sunat/xsd-validation.service';
 import { unzipSync } from 'fflate';
 import { LivePublisher } from '@factuez/service-access';
 import { isRetryableLocalPreparationError, LOCAL_PREPARATION_MAX_ATTEMPTS, localPreparationRetryDelay } from './local-preparation-policy';
+import { CurrentPdfService } from './current-pdf.service';
 
 type Stored = { storageKey: string; sha256: string; sizeBytes: number };
 const QUEUE = 'fiscal-circuit-local-qa';
@@ -30,7 +30,8 @@ export class FiscalCircuitQaService implements OnApplicationBootstrap, OnModuleD
   private readonly live = new LivePublisher();
   constructor(private readonly prisma: PrismaService, private readonly local: LocalXmlValidationService,
     private readonly store: ArtifactStore, private readonly vault: SecretVault, private readonly signer: LocalXmlWorkerService,
-    private readonly xsd: XsdValidationService) {}
+    private readonly xsd: XsdValidationService,
+    @Optional() private readonly previews: CurrentPdfService = new CurrentPdfService()) {}
   private enabled() {
     if (process.env.FISCAL_CIRCUIT_QA_ENABLED !== 'true') throw new ServiceUnavailableException('Circuito simulado deshabilitado');
     if (process.env.SUNAT_BETA_TRANSMISSION_ENABLED === 'true') throw new ConflictException('QA requiere transmisión externa deshabilitada');
@@ -215,7 +216,7 @@ export class FiscalCircuitQaService implements OnApplicationBootstrap, OnModuleD
       const root = safeXml(xml.toString());
       const digests = root.getElementsByTagNameNS('http://www.w3.org/2000/09/xmldsig#', 'DigestValue');
       if (digests.length !== 1 || digests[0].textContent !== row.documentDigestValue) throw new ConflictException('Hash archivado inconsistente');
-      return { bytes: await renderLocalDocumentPdf(context.snapshot, format as PrintFormat, { digestValue: row.documentDigestValue, status: row.state }), mediaType: 'application/pdf', fileName: `${context.snapshot.issuer.identityNumber}-${context.snapshot.fullNumber}-${format}-SIMULADO.pdf` };
+      return { bytes: await this.previews.document(context.snapshot, format, authorization, { digestValue: row.documentDigestValue, status: row.state }, context.printContext), mediaType: 'application/pdf', fileName: `${context.snapshot.issuer.identityNumber}-${context.snapshot.fullNumber}-${format}-SIMULADO.pdf` };
     }
     const map = { xml: row.documentXmlArtifact, request: row.requestArtifact, cdr: row.cdrZipArtifact };
     if (!Object.hasOwn(map, format)) throw new BadRequestException('Formato inválido');

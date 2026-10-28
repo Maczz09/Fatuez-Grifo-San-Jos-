@@ -1,4 +1,6 @@
-import { BadRequestException, Injectable, ServiceUnavailableException } from '@nestjs/common';
+import { CdrSignatureTrustService } from '../infrastructure/crypto/cdr-signature-trust.service';
+import { XsdValidationService } from '../infrastructure/sunat/xsd-validation.service';
+import { BadRequestException, Injectable, Optional, ServiceUnavailableException } from '@nestjs/common';
 import { FISCAL_RULE_COVERAGE, FISCAL_RULE_PROFILE, FISCAL_RULES_SOURCE, isRucStructurallyValid, validateFiscalSnapshot } from '@factuez/sunat-core';
 import { FiscalConfigurationService } from './fiscal-configuration.service';
 import { PrismaService } from '../infrastructure/prisma.service';
@@ -9,8 +11,8 @@ import { CertificateTrustService, type CertificateTrustResult } from '../infrast
 export type ReadinessCheck = { code: string; status: 'PASS' | 'BLOCKED' | 'PENDING' | 'NOT_APPLICABLE'; description: string };
 export type FiscalReadinessReport = {
   ruc: string; environment: string; revision: number; checkedAt: string;
-  state: 'LOCAL_ONLY' | 'BLOCKED'; fiscalTransmission: false; readyForLocalDevelopment: boolean;
-  readyForOfficialBeta: false; readyForProduction: false; activationImplemented: false;
+  state: 'LOCAL_ONLY' | 'BLOCKED' | 'READY'; fiscalTransmission: boolean; readyForLocalDevelopment: boolean;
+  readyForOfficialBeta: false; readyForProduction: boolean; activationImplemented: boolean;
   certificateTrust: CertificateTrustResult | null; checks: ReadinessCheck[]; blockers: string[];
   rules: { profile: string; coverageComplete: false; source: typeof FISCAL_RULES_SOURCE; coverage: typeof FISCAL_RULE_COVERAGE };
 };
@@ -20,7 +22,8 @@ export type FiscalReadinessReport = {
 export class FiscalReadinessService {
   constructor(private readonly configuration: FiscalConfigurationService, private readonly prisma: PrismaService,
     private readonly vault: SecretVault, private readonly certificates: CertificateInspectionService,
-    private readonly trust: CertificateTrustService) {}
+    private readonly trust: CertificateTrustService, @Optional() private readonly cdrTrust?: CdrSignatureTrustService,
+    @Optional() private readonly xsd?: XsdValidationService) {}
 
   async inspect(companyId: string, environment: string, authorization: string): Promise<FiscalReadinessReport> {
     // Resolves through scoped Billing catalog. Client cannot choose a free-form RUC.
@@ -82,13 +85,31 @@ export class FiscalReadinessService {
     check('CERTIFICATE_CHAIN', certificateTrust?.chainValid ? 'PASS' : 'BLOCKED', 'Cadena offline estricta hasta raíces explícitas fijadas por SHA-256; autofirmado de emisor no permitido');
     check('CERTIFICATE_REVOCATION', certificateTrust?.revocation === 'VERIFIED_OFFLINE_CRL' ? 'PASS' : certificateTrust?.revocation === 'INVALID' ? 'BLOCKED' : 'PENDING',
       'Se requiere CRL firmada/vigente para toda la cadena; ausencia/errores bloquean habilitación');
-    check('FISCAL_RULES_COVERAGE', 'BLOCKED', 'Perfil 01/03 limitado y versionado; no se han automatizado todas las reglas del XLSX ni padrones');
-    check('SUNAT_REGISTRATION', 'PENDING', 'Registro SEE, situación RUC y certificado registrado pendientes de evidencia oficial por emisor');
-    check('OFFICIAL_BETA_PILOT', 'PENDING', 'El emulador local no sustituye un piloto Beta oficial ni acredita validación tributaria');
-    check('OFFICIAL_ACTIVATION', 'BLOCKED', 'Versión de desarrollo: despacho oficial no habilitado. No basta activar variables de entorno');
+    let productionReady = false;
+    if (environment === 'PRODUCTION') {
+      let grant; let storageReady = true;
+      try { grant = await this.prisma.fiscalDispatchAuthorization.findUnique({ where: { issuerRuc_environment: { issuerRuc: configured.ruc, environment: 'PRODUCTION' } } }); }
+      catch { storageReady = false; }
+      const active = grant?.enabled === true && ['01-PEN-0101-IGV18-v1', '01-03-PEN-0101-IGV18-v2'].includes(grant.profile) && !!grant.registrationAttestedAt && grant.credentialRevision === configured.revision && grant.certificateFingerprint === row?.certificateFingerprint;
+      check('EMISSION_ENVIRONMENT', configured.emissionEnvironment === 'PRODUCTION' ? 'PASS' : 'PENDING', 'El ambiente de emisión de la empresa debe ser Producción; guardar credenciales no cambia el ambiente de las ventas.');
+      check('FISCAL_PROFILE', 'PASS', grant?.profile === '01-03-PEN-0101-IGV18-v2' ? 'Factura 01 y boleta 03: PEN, operación 0101 e IGV 18 %. Boleta enviada mediante RC individual con evidencia propia.' : 'Factura 01: PEN, operación 0101 e IGV 18 %. Boleta 03 requiere una nueva elección y versión de autorización.');
+      check('EMITTER_REGISTRATION_ATTESTED', grant?.registrationAttestedAt ? 'PASS' : 'PENDING', 'El responsable debe confirmar el registro SEE del emisor. Su declaración no sustituye una consulta oficial de SUNAT.');
+      check('XSD_RUNTIME', await this.xsd?.configured() ? 'PASS' : 'BLOCKED', 'Paquete XSD fijado y validador local disponibles; cada XML se valida antes del envío.');
+      check('CDR_TRUST', await this.cdrTrust?.configured() ? 'PASS' : 'BLOCKED', 'Firmante CDR, cadena y revocación verificados contra archivos de confianza del servidor.');
+      check('BILLING_PRODUCTION_ADMISSION', configured.productionInvoiceAdmission === true ? 'PASS' : 'BLOCKED', 'Billing debe tener instalada y habilitada la admisión de factura 01 antes de confirmar el documento y su numeración.');
+      check('PRODUCTION_RUNTIME', process.env.SUNAT_PRODUCTION_WORKFLOW_ENABLED === 'true' ? 'PASS' : 'BLOCKED', 'El servidor debe tener instalado y habilitado el servicio de despacho de Producción.');
+      check('PRODUCTION_AUTHORIZATION_STORAGE', storageReady ? 'PASS' : 'BLOCKED', 'Almacenamiento de autorización por emisor disponible.');
+      check('OFFICIAL_ACTIVATION', active ? 'PASS' : 'BLOCKED', 'Autorización explícita del perfil elegido ligada a la revisión actual del certificado y las credenciales.');
+      productionReady = checks.every(item => item.status === 'PASS' || item.status === 'NOT_APPLICABLE');
+    } else {
+      check('FISCAL_RULES_COVERAGE', 'BLOCKED', 'Perfil 01/03 limitado y versionado; no se han automatizado todas las reglas del XLSX ni padrones');
+      check('SUNAT_REGISTRATION', 'PENDING', 'Registro SEE, situación RUC y certificado registrado pendientes de evidencia oficial por emisor');
+      check('OFFICIAL_BETA_PILOT', 'PENDING', 'El emulador local no sustituye un piloto Beta oficial ni acredita validación tributaria');
+      check('OFFICIAL_ACTIVATION', 'BLOCKED', 'Despacho Beta de esta versión no habilitado');
+    }
     return { ruc: configured.ruc, environment, revision: configured.revision, checkedAt: now.toISOString(),
-      state: fictitious ? 'LOCAL_ONLY' : 'BLOCKED', fiscalTransmission: false, readyForLocalDevelopment: fictitious,
-      readyForOfficialBeta: false, readyForProduction: false, activationImplemented: false, certificateTrust, checks,
+      state: productionReady ? 'READY' : fictitious ? 'LOCAL_ONLY' : 'BLOCKED', fiscalTransmission: productionReady, readyForLocalDevelopment: fictitious,
+      readyForOfficialBeta: false, readyForProduction: productionReady, activationImplemented: environment === 'PRODUCTION', certificateTrust, checks,
       blockers: checks.filter(item => item.status === 'BLOCKED' || item.status === 'PENDING').map(item => item.code),
       rules: { profile: FISCAL_RULE_PROFILE, coverageComplete: false, source: FISCAL_RULES_SOURCE, coverage: FISCAL_RULE_COVERAGE } };
   }

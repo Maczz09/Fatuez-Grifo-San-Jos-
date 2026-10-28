@@ -1,4 +1,4 @@
-import { allowsResource, type AccessScope, type FiscalDocumentSnapshot } from '@factuez/contracts';
+import { allowsResource, type FiscalDocumentSnapshot } from '@factuez/contracts';
 import {
   boundedSupplementJson, validateFiscalSupplementCommand, type FiscalSupplementCommand,
 } from '@factuez/sunat-core/dist/fiscal-supplement-command';
@@ -10,7 +10,8 @@ import { parseDecimal } from '@factuez/sunat-core/dist/tax';
 import type { FiscalBatchSnapshot, FiscalRcEntry, FiscalRaEntry } from '@factuez/sunat-core/dist/fiscal-batch';
 import type { Prisma, PrismaClient } from '../generated/prisma/client';
 
-export type BetaSupplementActor = { userId: string; scope: AccessScope };
+import {supplementActor,type SupplementActor} from './supplement-actor';
+export type BetaSupplementActor = SupplementActor;
 export type BetaSupplementReservation = {
   operationId: string; eventId: string; operationKind: 'NOTE' | 'RC' | 'RA'; deduplicated: boolean;
 };
@@ -50,12 +51,9 @@ export class BetaSupplementCommandRepository {
 
   async reserve(value: unknown, actorInput: BetaSupplementActor): Promise<BetaSupplementReservation> {
     const command = validateFiscalSupplementCommand(value);
-    const actor = boundedSupplementJson(actorInput) as BetaSupplementActor;
-    if (!actor || !UUID.test(actor.userId) || !actor.scope ||
-        !['GLOBAL', 'ASSIGNED'].includes(actor.scope.kind) ||
-        (actor.scope.kind === 'ASSIGNED' && ![actor.scope.branchIds, actor.scope.emissionPointIds, actor.scope.series]
-          .every(ids => Array.isArray(ids) && ids.every(id => typeof id === 'string' && UUID.test(id))))) deny('actor/scope inválido');
+    const actor = supplementActor(actorInput);
     if (!allowsResource(actor.scope, command.payload.branchId)) deny('sede fuera de scope');
+    if(actor.userId===null&&command.payload.envelope.kind==='BATCH')deny('SERVICE batch sin procedencia persistente soportada');
     for (let attempt = 0; ; attempt++) {
       try {
         return await this.prisma.$transaction(tx => this.reserveInTransaction(tx, command, actor),
@@ -66,17 +64,30 @@ export class BetaSupplementCommandRepository {
     }
   }
 
+  /** Owner-local composition ONLY: caller owns commit/rollback and activation gate.
+   * Revalidates the input; never opens or commits a nested transaction. */
+  async reserveWithinTransaction(tx:Tx,value:unknown,actorInput:BetaSupplementActor):Promise<BetaSupplementReservation>{
+    const command=validateFiscalSupplementCommand(value),actor=supplementActor(actorInput);
+    if(!allowsResource(actor.scope,command.payload.branchId))deny('sede fuera de scope');
+    if(actor.userId===null&&command.payload.envelope.kind==='BATCH')deny('SERVICE batch sin procedencia persistente soportada');
+    return this.reserveInTransaction(tx,command,actor);
+  }
+
   private async reserveInTransaction(tx: Tx, command: FiscalSupplementCommand, actor: BetaSupplementActor) {
     const p = command.payload, operationId = p.operationId.toLowerCase();
     // Parameterized, transaction-scoped, stable locks. Operation IDs are global
     // across issuers and NOTE/RC/RA; the company lock also protects credit phantoms.
     await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`factuez:beta-supplement:company:${p.companyId}:ruc:${p.issuerRuc}`}, 0))`;
     await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`factuez:beta-supplement:operation:${operationId}`}, 0))`;
+    if (process.env.STATION_MASTER_CRUD_ENABLED === 'true') {
+      await tx.$executeRaw`SELECT "id" FROM "CompanySettings" WHERE "id" = ${p.companyId} FOR SHARE`;
+      await tx.$executeRaw`SELECT "id" FROM "Branch" WHERE "id" = ${p.branchId.toLowerCase()}::uuid FOR SHARE`;
+    }
     const company = await tx.companySettings.findUnique({ where: { id: p.companyId },
-      select: { id: true, ruc: true, environment: true } });
+      select: { id: true, ruc: true, environment: true, active: true } });
     const branch = await tx.branch.findUnique({ where: { id: p.branchId.toLowerCase() },
       select: { id: true, companyId: true, active: true } });
-    if (!company || company.id !== p.companyId || company.ruc !== p.issuerRuc || company.environment !== 'BETA')
+    if (!company || company.active === false || company.id !== p.companyId || company.ruc !== p.issuerRuc || company.environment !== 'BETA')
       deny('empresa/RUC/environment propio no coincide o producción bloqueada');
     if (!branch?.active || branch.companyId !== company.id || branch.id.toLowerCase() !== p.branchId.toLowerCase())
       deny('sede propia inválida');
@@ -126,7 +137,7 @@ export class BetaSupplementCommandRepository {
         // is the identifier suffix, NOT a fiscal SeriesCounter/nextNumber.
         // Existing (company,referenceDate,sequence) uniqueness also spans RC/RA.
         await tx.dailySummary.create({ data: { id: operationId, companyId: p.companyId,
-          emissionPointId: pointId, createdByUserId: actor.userId.toLowerCase(),
+          emissionPointId: pointId, createdByUserId: actor.userId!.toLowerCase(),
           referenceDate: new Date(`${envelope.batch.referenceDate}T00:00:00Z`),
           sequence: Number(envelope.batch.identifier.split('-')[2]), identifier: envelope.batch.identifier, status: 'QUEUED',
           items: { create: envelope.batch.input.entries.map((entry, index) => ({
@@ -294,7 +305,8 @@ export class BetaSupplementCommandRepository {
       id: command.payload.operationId.toLowerCase(), companyId: command.payload.companyId, seriesCounterId: counterId,
       type: TYPES[note.documentTypeCode], status: 'ISSUED', sunatStatus: 'QUEUED', series: note.series, number: BigInt(note.number),
       fullNumber: note.fullNumber, issueDate: new Date(note.issueDate), currencyCode: note.currencyCode,
-      operationTypeCode: note.operationTypeCode, emissionPointId: original.emissionPointId, createdByUserId: actor.userId.toLowerCase(),
+      operationTypeCode: note.operationTypeCode, emissionPointId: original.emissionPointId, createdByUserId: actor.userId?.toLowerCase()??null,
+      ...(actor.b2b?{createdByActor:json(actor.b2b)}:{}),
       customerIdentityType: note.customer.identityType, customerIdentityNumber: note.customer.identityNumber,
       customerLegalName: note.customer.legalName, customerAddress: note.customer.address,
       taxableAmount: note.totals.taxableAmount, unaffectedAmount: note.totals.unaffectedAmount,

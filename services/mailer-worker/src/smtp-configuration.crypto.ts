@@ -4,11 +4,11 @@ import { createCipheriv, createDecipheriv, randomBytes } from 'node:crypto';
 import { closeSync, constants, fstatSync, openSync, readSync } from 'node:fs';
 import { isAbsolute } from 'node:path';
 
-export type SmtpSecretContext = { companyId: number; ruc: string; field: 'configuration' };
+export type SmtpSecretContext = { companyId: number; ruc: string; field: 'configuration' | `corporate-test:${string}` | `corporate-document:${string}` };
 export type SmtpKeyReadiness = 'READY' | 'MISSING' | 'INVALID';
 
 function aad(context: SmtpSecretContext, version: number) {
-  if (!Number.isSafeInteger(context.companyId) || context.companyId < 1 || !/^\d{11}$/.test(context.ruc) || context.field !== 'configuration')
+  if (!Number.isSafeInteger(context.companyId) || context.companyId < 1 || !/^\d{11}$/.test(context.ruc) || (context.field !== 'configuration' && !/^(?:corporate-test|corporate-document):[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(context.field)))
     throw new AccessError(400, 'Contexto de configuración SMTP inválido');
   return Buffer.from(`factuez.smtp.v1|${version}|${context.companyId}|${context.ruc}|${context.field}`, 'utf8');
 }
@@ -43,7 +43,7 @@ export class SmtpConfigurationVault {
   }
 
   seal(plaintext: Buffer, context: SmtpSecretContext): { cipher: string; keyVersion: number } {
-    if (!Buffer.isBuffer(plaintext) || plaintext.length < 1 || plaintext.length > 4096) throw new AccessError(400, 'Configuración SMTP demasiado grande');
+    if (!Buffer.isBuffer(plaintext) || plaintext.length < 1 || plaintext.length > (context.field === 'configuration' ? 4096 : 12288)) throw new AccessError(400, 'Configuración SMTP demasiado grande');
     const key = this.key();
     try {
       const iv = randomBytes(12);
@@ -57,11 +57,11 @@ export class SmtpConfigurationVault {
   open(envelope: string, context: SmtpSecretContext): Buffer {
     const key = this.key();
     try {
-      if (typeof envelope !== 'string' || envelope.length > 5700) throw new Error();
+      if (typeof envelope !== 'string' || envelope.length > (context.field === 'configuration' ? 5700 : 17000)) throw new Error();
       const parts = envelope.split('.');
       if (parts.length !== 5 || parts[0] !== 'v1' || parts[1] !== String(key.version) || !parts.slice(2).every(part => /^[A-Za-z0-9_-]+$/.test(part))) throw new Error();
       const [iv, tag, encrypted] = parts.slice(2).map(part => Buffer.from(part, 'base64url'));
-      if (iv.length !== 12 || tag.length !== 16 || !encrypted.length || encrypted.length > 4096 ||
+      if (iv.length !== 12 || tag.length !== 16 || !encrypted.length || encrypted.length > (context.field === 'configuration' ? 4096 : 12288) ||
         [iv, tag, encrypted].some((part, i) => part.toString('base64url') !== parts[i + 2])) throw new Error();
       const decipher = createDecipheriv('aes-256-gcm', key.bytes, iv, { authTagLength: 16 });
       decipher.setAAD(aad(context, key.version)); decipher.setAuthTag(tag);

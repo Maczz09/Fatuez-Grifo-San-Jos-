@@ -1,4 +1,4 @@
-import { BadRequestException, ConflictException, ForbiddenException, HttpException, Injectable, NotFoundException, ServiceUnavailableException } from '@nestjs/common';
+import { BadRequestException, ConflictException, ForbiddenException, HttpException, Injectable, NotFoundException, ServiceUnavailableException, Optional } from '@nestjs/common';
 import { identity, privateJson, UUID, AccessError } from '@factuez/service-access';
 import { buildGreQaUbl, validateGreQaInput, GRE_QA_PROFILE, GRE_QA_UBIGEOS, GRE_QA_UNITS, GRE_QA_WARNING, type GreQaInput, type GreQaSnapshot } from '@factuez/sunat-core/dist/gre-ubl';
 import { randomUUID, createHash } from 'node:crypto';
@@ -9,13 +9,15 @@ import { SecretVault } from '../infrastructure/crypto/secret-vault';
 import { XsdValidationService } from '../infrastructure/sunat/xsd-validation.service';
 import { GreQaSigningService } from './gre-qa-sign.service';
 import { simulateGreQa } from './gre-qa-simulator';
-import { renderLocalGrePdf } from '@factuez/pdf-renderer';
+import type { FrozenPrintPresentationV1 } from '@factuez/contracts';
+import { CurrentPdfService } from './current-pdf.service';
 type Stored = { storageKey: string; sha256: string; sizeBytes: number };
 type Row = { id: string; actorId: string; idempotencyKey: string; issuerRuc: string; companyId: number; originBranchId: string; destinationBranchId: string; localIdentifier: string; ublNumber: string; payload: GreQaSnapshot; inputSha256: string; xmlArtifact: Stored; zipArtifact: Stored; signatureVerified: boolean; digestValue: string | null; certificateFingerprint: string | null; credentialRevision: number | null; xsdEvidence: unknown; state: string; simulation: ReturnType<typeof simulateGreQa> | null; createdAt: Date };
 type Catalog = { capabilities: { fiscalTransmission: boolean }; companies: { id: number; ruc: string; legalName: string; environment: string }[]; branches: { id: string; companyId: number; name: string }[] };
 @Injectable()
 export class GreQaService {
-  constructor(private readonly prisma: PrismaService, private readonly store: ArtifactStore, private readonly vault: SecretVault, private readonly signer: GreQaSigningService, private readonly xsd: XsdValidationService) {}
+  constructor(private readonly prisma: PrismaService, private readonly store: ArtifactStore, private readonly vault: SecretVault, private readonly signer: GreQaSigningService, private readonly xsd: XsdValidationService,
+    @Optional() private readonly previews: CurrentPdfService = new CurrentPdfService()) {}
   private enabled() { if (process.env.GRE_QA_ENABLED !== 'true' || process.env.SUNAT_BETA_TRANSMISSION_ENABLED === 'true' || process.env.GRE_EXTERNAL_TRANSMISSION_ENABLED === 'true') throw new ServiceUnavailableException('GRE local requiere transmisión externa deshabilitada'); }
   async authorize(authorization?: string) {
     this.enabled();
@@ -75,7 +77,13 @@ export class GreQaService {
     const prior = await this.prisma.$queryRaw<Row[]>`SELECT * FROM "GreQaGuide" WHERE "actorId"=${context.user.sub}::uuid AND "idempotencyKey"=${idempotencyKey}::uuid LIMIT 1`;
     if (prior[0]) { if (prior[0].inputSha256 !== inputSha256) throw new ConflictException('La clave idempotente ya fue usada con otros datos'); return this.view(prior[0]); }
     const id = randomUUID(), ublNumber = `TQ00-${parseInt(id.slice(0,8),16) % 99999999 + 1}`;
+    const printPresentation = process.env.PRINT_SETTINGS_ENABLED === 'true' ? await privateJson<FrozenPrintPresentationV1>(
+      process.env.BILLING_INTERNAL_URL ?? 'http://billing-service:3002',
+      `/api/v1/stations/print-settings/${input.companyId}/snapshot?branchId=${encodeURIComponent(input.origin.branchId)}`, authorization!) : undefined;
+    if (printPresentation && (printPresentation.issuerRuc !== context.issuer.ruc || printPresentation.branchId !== input.origin.branchId))
+      throw new ConflictException('La presentación GRE no corresponde al emisor y sede autorizados');
     const snapshot: GreQaSnapshot = { ...input, id, localIdentifier: `GRE-QA-${id}`, ublNumber, issueDate, issueTime: new Intl.DateTimeFormat('en-GB',{timeZone:'America/Lima',hour:'2-digit',minute:'2-digit',second:'2-digit',hourCycle:'h23'}).format(issued),
+      ...(printPresentation ? { branchId: input.origin.branchId, printPresentation } : {}),
       issuer: { ruc: context.issuer.ruc, legalName: context.issuer.legalName.trim() }, profile: GRE_QA_PROFILE, environment: 'BETA' };
     const unsigned = buildGreQaUbl(snapshot);
     let xml = unsigned, digestValue: string | null = null, certificateFingerprint: string | null = null, credentialRevision: number | null = null;
@@ -127,7 +135,7 @@ export class GreQaService {
     if (!['xml','zip','ticket','a4'].includes(format)) throw new BadRequestException('Formato GRE inválido');
     await this.checkCredentialRevision(row);
     await this.store.read(id,row.xmlArtifact);
-    if(format==='ticket'||format==='a4')return{bytes:await renderLocalGrePdf(row.payload,format,row.digestValue??undefined),mediaType:'application/pdf',fileName:`${row.issuerRuc}-09-${row.ublNumber}-${format}-PRUEBA.pdf`};
+    if(format==='ticket'||format==='a4')return{bytes:await this.previews.gre(row.payload,{companyId:row.companyId,branchId:row.originBranchId},format,authorization,row.digestValue??undefined),mediaType:'application/pdf',fileName:`${row.issuerRuc}-09-${row.ublNumber}-${format}-PRUEBA.pdf`};
     return { bytes: await this.store.read(id,format === 'xml' ? row.xmlArtifact : row.zipArtifact), mediaType: format === 'xml' ? 'application/xml' : 'application/zip', fileName: `${row.issuerRuc}-09-${row.ublNumber}-PRUEBA.${format}` };
   }
 }

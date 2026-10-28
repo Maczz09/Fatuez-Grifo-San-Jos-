@@ -6,7 +6,7 @@ import { XmlSignerService } from './xml-signer.service';
 
 /** Preparación criptográfica Beta; el llamador debe acreditar autorización/cadena/CRL antes de iniciar el worker. */
 export function prepareBetaXml(snapshot: FiscalDocumentSnapshot, bytes: Buffer, password: string, identifier?: string) {
-  if (snapshot.environment !== 'BETA') throw new Error('Producción no admitida');
+  if (snapshot.environment !== 'BETA' && !(snapshot.environment === 'PRODUCTION' && ['01', '03'].includes(snapshot.documentTypeCode) && snapshot.currencyCode === 'PEN' && snapshot.operationTypeCode === '0101')) throw new Error('Documento fuera del perfil de firma');
   assertFiscalSnapshot(snapshot, { mode: 'REAL_PREPARATION' });
   const metadata = inspectCertificate(bytes, password);
   if (metadata.selfSigned || !metadata.digitalSignature || metadata.subjectRucCandidates.length !== 1 ||
@@ -18,5 +18,10 @@ export function prepareBetaXml(snapshot: FiscalDocumentSnapshot, bytes: Buffer, 
     ? signer.sign(buildReceiptSummary(snapshot, identifier!, 'REAL_PREPARATION'), bytes, password, 'SummaryDocuments') : document;
   const fileName = snapshot.documentTypeCode === '03' ? `${snapshot.issuer.identityNumber}-${identifier}` : documentFileName;
   const zip = Buffer.from(zipSync({ [`${fileName}.xml`]: Buffer.from(request.xml) }, { level: 6, mtime: new Date('2020-01-01T00:00:00Z') }));
-  return { document, request, fileName, documentFileName, zip };
+  // The 03 submission ZIP contains RC XML; preserve a distinct local package for
+  // the signed individual document. It is never represented as the submitted ZIP.
+  const individualZip = snapshot.documentTypeCode === '03'
+    ? Buffer.from(zipSync({ [`${documentFileName}.xml`]: Buffer.from(document.xml) }, { level: 6, mtime: new Date('2020-01-01T00:00:00Z') }))
+    : undefined;
+  return { document, request, fileName, documentFileName, zip, individualZip };
 }

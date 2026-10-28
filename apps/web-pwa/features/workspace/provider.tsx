@@ -4,14 +4,26 @@ import {
   useCallback,
   useContext,
   useEffect,
+  useMemo,
   useRef,
   useState,
   type ReactNode,
 } from "react";
 import type { Catalog, User } from "./types";
+import {
+  catalogForView,
+  changeCatalogSelection,
+  INITIAL_CATALOG_SELECTION,
+  reconcileCatalogSelection,
+  assignedCatalogSelection,
+  type CatalogSelection,
+  type CatalogView,
+  type WorkspaceCatalog,
+} from './catalog-model';
 import { io } from 'socket.io-client';
 import { idlePhase, idleSeconds, localIdleDeadline, type IdlePhase } from './session-policy';
 import { SessionWarning } from './session-warning';
+import { clearAdminSessionFromWorkspace } from '../b2b/admin-session-cleanup';
 
 const apiBase = (process.env.NEXT_PUBLIC_API_BASE_URL ?? "").replace(/\/$/, "");
 export class ApiError extends Error {
@@ -53,7 +65,9 @@ type Workspace = {
   liveStatus: 'offline' | 'connecting' | 'connected';
   liveVersion: number;
   user?: User;
-  catalog?: Catalog;
+  catalog?: WorkspaceCatalog;
+  catalogSource: CatalogView;
+  setCatalogSource: (source: CatalogView) => void;
   branchId: string;
   companyId: string;
   setCompany: (id: string) => void;
@@ -68,7 +82,7 @@ type Workspace = {
   login: (username: string, password: string) => Promise<User>;
   logout: () => void;
   api: Api;
-  apiBlob: (path: string, signal?: AbortSignal, mediaType?: "application/pdf" | "application/zip" | "application/xml") => Promise<Blob>;
+  apiBlob: (path: string, signal?: AbortSignal, mediaType?: "application/pdf" | "application/zip" | "application/xml" | "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", options?: RequestInit) => Promise<Blob>;
   can: (permission: string) => boolean;
   reloadCatalog: () => Promise<void>;
 };
@@ -93,9 +107,13 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
   const [idle, setIdle] = useState<{ phase: IdlePhase; seconds: number }>({ phase: 'active', seconds: 1800 });
   const [continuing, setContinuing] = useState(false);
   const [continueError, setContinueError] = useState<string>();
-  const [catalog, setCatalog] = useState<Catalog>();
-  const [branchId, setBranchId] = useState("");
-  const [companyId, setCompanyId] = useState("");
+  const catalogVersion = useRef(0);
+  const [catalogState, setCatalogState] = useState<{ catalog?: Catalog; selection: CatalogSelection }>({ selection: INITIAL_CATALOG_SELECTION });
+  const catalog = useMemo(() => catalogState.catalog && session
+    ? catalogForView(catalogState.catalog, session.user.scope, catalogState.selection.source)
+    : undefined, [catalogState.catalog, catalogState.selection.source, session?.user]);
+  const selection = catalog && session ? assignedCatalogSelection(catalog, session.user.scope, catalogState.selection) : { ...catalogState.selection, companyId: '', branchId: '' };
+  const { companyId, branchId, source: catalogSource } = selection;
   const [catalogError, setCatalogError] = useState<string>();
   const [sessionNotice, setSessionNotice] = useState<string>();
   const [dirty, setDirty] = useState(false);
@@ -103,6 +121,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
   const [liveVersion, setLiveVersion] = useState(0);
   useEffect(() => { window.dispatchEvent(new Event('factuez:live-refresh')); }, [liveVersion]);
   const clearSession = useCallback(() => {
+    clearAdminSessionFromWorkspace();
     generation.current++;
     activeToken.current = undefined;
     currentSession.current = undefined;
@@ -112,10 +131,9 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     setRestoreError(undefined);
     setIdle({ phase: 'active', seconds: 1800 });
     setContinueError(undefined);
-    setCatalog(undefined);
+    catalogVersion.current++;
+    setCatalogState({ selection: INITIAL_CATALOG_SELECTION });
     setCatalogError(undefined);
-    setBranchId("");
-    setCompanyId("");
     setDirty(false);
   }, []);
   const logout = useCallback(() => {
@@ -138,11 +156,18 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
           '/api/v1/auth/browser-session', undefined, { signal: AbortSignal.timeout(5000) });
         if (generation.current !== stamp) return undefined;
         applyIdle(result);
-        const previous = currentSession.current?.user;
-        const sameProfile = previous && previous.sub === result.user.sub && previous.username === result.user.username && previous.fullName === result.user.fullName &&
-          JSON.stringify([previous.roles, previous.permissions, previous.scope]) === JSON.stringify([result.user.roles, result.user.permissions, result.user.scope]);
         activeToken.current = result.accessToken; currentSession.current = { token: result.accessToken, user: result.user };
-        setSession({ token: result.accessToken, user: sameProfile ? previous : result.user }); setRestoring(false); setRestoreError(undefined);
+        // Keep the rendered profile, not the previous transport response. The
+        // latter is a fresh object after every renewal and would reset resource
+        // effects on the second renewal, unmounting forms and open dialogs.
+        // currentSession still retains the latest token expiry for API/renewal.
+        setSession(current => {
+          const previous = current?.user;
+          const sameProfile = previous && previous.sub === result.user.sub && previous.username === result.user.username && previous.fullName === result.user.fullName &&
+            JSON.stringify([previous.roles, previous.permissions, previous.scope]) === JSON.stringify([result.user.roles, result.user.permissions, result.user.scope]);
+          return { token: result.accessToken, user: sameProfile ? previous : result.user };
+        });
+        setRestoring(false); setRestoreError(undefined);
         return result.user;
       } catch (error) {
         if (generation.current !== stamp) return undefined;
@@ -239,6 +264,9 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     socket.on('document.changed.v1', (event: { documentId?: unknown }) => {
       if (typeof event?.documentId === 'string' && /^[0-9a-f-]{36}$/i.test(event.documentId)) changed();
     });
+    socket.on('received.changed.v1', (event: { receivedDocumentId?: unknown }) => {
+      if (typeof event?.receivedDocumentId === 'string' && /^[0-9a-f-]{36}$/i.test(event.receivedDocumentId)) changed();
+    });
     socket.on('session.invalid', () => { logout(); setSessionNotice('Su sesión o permisos cambiaron. Inicie sesión nuevamente.'); });
     return () => { if (timer) clearTimeout(timer); socket.removeAllListeners(); socket.disconnect(); };
   }, [session, logout]);
@@ -264,28 +292,22 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     [getAccessToken, logout],
   );
   const reloadCatalog = useCallback(async () => {
+    if (!session?.user) return;
     const stamp = generation.current;
+    const version = ++catalogVersion.current;
+    const profile = JSON.stringify([session.user.sub, session.user.scope, session.user.roles, session.user.permissions]);
     setCatalogError(undefined);
     try {
       const next = await api<Catalog>("/api/v1/documents/catalog/issuance");
-      if (generation.current !== stamp) return;
-      setCatalog(next);
-      setCompanyId((current) =>
-        next.companies.some((company) => String(company.id) === current)
-          ? current
-          : session?.user.scope.kind === "GLOBAL"
-            ? ""
-            : String(next.branches[0]?.companyId ?? ""),
-      );
-      setBranchId((current) =>
-        next.branches.some((branch) => branch.id === current)
-          ? current
-          : session?.user.scope.kind === "GLOBAL"
-            ? ""
-            : (next.branches[0]?.id ?? ""),
-      );
+      const user = currentSession.current?.user;
+      if (generation.current !== stamp || catalogVersion.current !== version || !user ||
+        JSON.stringify([user.sub, user.scope, user.roles, user.permissions]) !== profile) return;
+      setCatalogState(current => ({
+        catalog: next,
+        selection: reconcileCatalogSelection(catalogForView(next, user.scope, current.selection.source), current.selection),
+      }));
     } catch (error) {
-      if (generation.current === stamp)
+      if (generation.current === stamp && catalogVersion.current === version)
         setCatalogError(
           error instanceof Error
             ? error.message
@@ -293,14 +315,42 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
         );
     }
   }, [api, session?.user]);
+  const setCompany = useCallback((id: string) => {
+    const scope = currentSession.current?.user.scope;
+    if (!scope) return;
+    setDirty(false);
+    setCatalogState(current => current.catalog ? {
+      ...current, selection: changeCatalogSelection(current.catalog, scope, current.selection, { kind: 'company', value: id }),
+    } : current);
+  }, []);
+  const setBranch = useCallback((id: string) => {
+    const scope = currentSession.current?.user.scope;
+    if (!scope) return;
+    setDirty(false);
+    setCatalogState(current => current.catalog ? {
+      ...current, selection: changeCatalogSelection(current.catalog, scope, current.selection, { kind: 'branch', value: id }),
+    } : current);
+  }, []);
+  const setCatalogSource = useCallback((source: CatalogView) => {
+    const scope = currentSession.current?.user.scope;
+    if (!scope || !['BUSINESS', 'SYNTHETIC', 'ALL'].includes(source)) return;
+    setDirty(false);
+    setCatalogState(current => current.catalog ? {
+      ...current, selection: changeCatalogSelection(current.catalog, scope, current.selection, { kind: 'source', value: source }),
+    } : current);
+  }, []);
   const apiBlob = useCallback(
-    async (path: string, signal?: AbortSignal, mediaType = "application/pdf") => {
+    async (path: string, signal?: AbortSignal, mediaType = "application/pdf", options?: RequestInit) => {
       const stamp = generation.current;
       const token = await getAccessToken();
       const response = await fetch(`${apiBase}${path}`, {
+        ...options,
         cache: "no-store",
+        credentials: 'same-origin',
         signal,
         headers: {
+          ...(options?.body ? { 'Content-Type': 'application/json' } : {}),
+          ...options?.headers,
           Accept: mediaType,
           Authorization: `Bearer ${token}`,
         },
@@ -320,7 +370,9 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
         throw new ApiError("Sesión cerrada durante la descarga", 401);
       if (response.headers.get("content-type")?.split(";")[0] !== mediaType)
         throw new Error("El servidor no devolvió el formato solicitado");
-      return response.blob();
+      const blob = await response.blob();
+      const filename = response.headers.get('content-disposition')?.match(/^attachment; filename="([A-Za-z0-9_-]{1,180}\.(?:xml|zip|pdf|xlsx))"$/)?.[1];
+      return filename ? new File([blob], filename, {type: blob.type}) : blob;
     },
     [getAccessToken, logout],
   );
@@ -359,7 +411,8 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     activeToken.current = result.accessToken;
     currentSession.current = { token: result.accessToken, user };
     setRestoring(false); setRestoreError(undefined);
-    setCatalog(undefined);
+    catalogVersion.current++;
+    setCatalogState({ selection: INITIAL_CATALOG_SELECTION });
     setCatalogError(undefined);
     setSessionNotice(undefined);
     setSession({ token: result.accessToken, user });
@@ -373,19 +426,11 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
         liveVersion,
         user: session?.user,
         catalog,
+        catalogSource,
+        setCatalogSource,
         branchId,
         companyId,
-        setCompany: (id) => {
-          setDirty(false);
-          setCompanyId(id);
-          setBranchId(
-            session?.user.scope.kind === "GLOBAL"
-              ? ""
-              : (catalog?.branches.find(
-                  (branch) => !id || String(branch.companyId) === id,
-                )?.id ?? ""),
-          );
-        },
+        setCompany,
         catalogError,
         sessionNotice,
         restoring,
@@ -393,12 +438,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
         retryRestore: () => { void restoreSession(true).catch(() => {}); },
         dirty,
         setDirty,
-        setBranch: (id) => {
-          setDirty(false);
-          setBranchId(id);
-          const branch = catalog?.branches.find((branch) => branch.id === id);
-          if (branch) setCompanyId(String(branch.companyId));
-        },
+        setBranch,
         login,
         logout,
         api,

@@ -72,6 +72,7 @@ model CompanySettings {
   phone              String?          @db.VarChar(40)
   contactEmails      String[]
   environment        SunatEnvironment @default(BETA)
+  active             Boolean          @default(true)
   igvRate            Decimal          @default(18.00) @db.Decimal(5, 2)
   setupCompletedAt   DateTime?
   configVersion      Int              @default(1)
@@ -88,12 +89,14 @@ model CompanySettings {
 }
 
 model Branch {
+  establishmentCode String? @db.VarChar(4)
   id          String @id @default(uuid()) @db.Uuid
   companyId   Int
   code        String @unique @db.VarChar(20)
   name        String @db.VarChar(120)
   address     String? @db.VarChar(300)
   active      Boolean @default(true)
+  masterRevision Int @default(1)
   createdAt   DateTime @default(now())
   company     CompanySettings @relation(fields: [companyId], references: [id], onDelete: Restrict)
   emissionPoints EmissionPoint[]
@@ -111,6 +114,7 @@ model EmissionPoint {
   address     String?  @db.VarChar(300)
   trackNumber Int?
   active      Boolean  @default(true)
+  masterRevision Int @default(1)
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
@@ -149,6 +153,7 @@ model SeriesCounter {
   series          String       @db.VarChar(4)
   nextNumber      BigInt       @default(1)
   active          Boolean      @default(true)
+  masterRevision  Int          @default(1)
   createdAt       DateTime     @default(now())
   updatedAt       DateTime     @updatedAt
 
@@ -209,7 +214,8 @@ model Document {
   operationTypeCode      String?        @db.VarChar(4)
   emissionPointId        String         @db.Uuid
   shiftId                String?        @db.Uuid
-  createdByUserId        String         @db.Uuid // ID externo de identity-service
+  createdByUserId        String?        @db.Uuid // NULL for a genuine B2B SERVICE, never a fabricated human.
+  createdByActor         Json?          // Verified B2B actor provenance; never credentials or bearer tokens.
   customerId             String?        @db.Uuid
   customerIdentityType   String         @db.VarChar(1)
   customerIdentityNumber String         @db.VarChar(15)

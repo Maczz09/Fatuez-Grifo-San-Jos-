@@ -1,4 +1,5 @@
 import { addMoney, calculateTaxLine, parseDecimal } from './tax';
+import { validPrintMetadata } from './print-metadata';
 
 /** Source pin, not a claim that every row in the workbook is executable code. */
 export const FISCAL_RULES_SOURCE = Object.freeze({
@@ -34,7 +35,7 @@ const UNIT_SUBSET = new Set(['GLL', 'LTR', 'NIU', 'KGM', 'M3', 'HUR', 'ZZ']);
 const xmlIllegal = /[^\u0009\u000a\u000d\u0020-\ud7ff\ue000-\ufffd\u{10000}-\u{10ffff}]/u;
 type ObjectValue = Record<string, unknown>;
 const object = (value: unknown): value is ObjectValue => Boolean(value && typeof value === 'object' && !Array.isArray(value));
-const SNAPSHOT_KEYS = ['companyId', 'branchId', 'environment', 'documentId', 'documentTypeCode', 'series', 'number', 'fullNumber', 'issueDate', 'currencyCode', 'paymentTerms', 'operationTypeCode', 'issuer', 'customer', 'lines', 'totals'] as const;
+const SNAPSHOT_KEYS = ['companyId', 'branchId', 'environment', 'documentId', 'documentTypeCode', 'series', 'number', 'fullNumber', 'issueDate', 'currencyCode', 'paymentTerms', 'operationTypeCode', 'issuer', 'customer', 'lines', 'totals', 'printPresentation', 'printOperation'] as const;
 const PARTY_KEYS = ['identityType', 'identityNumber', 'legalName', 'address'] as const;
 const ISSUER_KEYS = [...PARTY_KEYS, 'tradeName', 'ubigeo', 'establishmentCode'] as const;
 const LINE_KEYS = ['lineNumber', 'productCode', 'description', 'unitCode', 'quantity', 'unitValue', 'unitPriceWithTax', 'taxAffectationCode', 'igvRate', 'lineExtensionAmount', 'igvAmount', 'totalAmount'] as const;
@@ -49,6 +50,8 @@ export function validateInvoiceSupportedFields(input: unknown): FiscalRuleIssue[
   };
   if (!object(input)) return issues;
   keys(input, SNAPSHOT_KEYS, '$');
+  if (!validPrintMetadata(input)) issues.push({ code: 'PRINT_METADATA_INVALID', path: 'printPresentation/printOperation',
+    message: 'La presentación visual debe estar versionada, acotada y vinculada al RUC/sede del snapshot', category: 'INVALID' });
   keys(input.issuer, ISSUER_KEYS, 'issuer');
   keys(input.customer, PARTY_KEYS, 'customer');
   keys(input.totals, TOTAL_KEYS, 'totals');

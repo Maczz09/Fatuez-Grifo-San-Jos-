@@ -8,6 +8,7 @@ import { PrismaService } from '../infrastructure/prisma.service';
 import { ArtifactStore } from '../infrastructure/artifact-store';
 import { SecretVault } from '../infrastructure/crypto/secret-vault';
 import { LocalXmlWorkerService } from '../infrastructure/crypto/local-xml-worker.service';
+import type { PrintOwner } from './current-pdf.service';
 
 const hash = (snapshot: unknown) => createHash('sha256').update(JSON.stringify(snapshot)).digest('hex');
 export class LocalDocumentPendingError extends ConflictException {
@@ -31,7 +32,7 @@ export class LocalXmlValidationService {
     if (response.status === 403) throw new ForbiddenException('Documento no autorizado');
     if (response.status === 404) throw new NotFoundException('Documento no disponible');
     if (!response.ok) throw new ServiceUnavailableException('Billing no está disponible');
-    let detail: { id: string; immutableSnapshot: FiscalDocumentSnapshot; fiscalTransmission: boolean };
+    let detail: { id: string; immutableSnapshot: FiscalDocumentSnapshot; fiscalTransmission: boolean; printContext?: PrintOwner };
     try { detail = await response.json() as typeof detail; } catch { throw new ServiceUnavailableException('Respuesta de Billing inválida'); }
     const snapshot = detail.immutableSnapshot;
     if (detail.id !== documentId || snapshot?.documentId !== documentId || detail.fiscalTransmission !== false) throw new ConflictException('Contexto de prueba inconsistente');
@@ -45,7 +46,7 @@ export class LocalXmlValidationService {
     const credentials = await this.prisma.sunatCredentials.findUnique({ where: { issuerRuc_environment: { issuerRuc: fiscal.issuerRuc, environment: 'BETA' } } });
     if (!credentials?.certificateCipher || !credentials.certificatePasswordCipher || !credentials.certificateFingerprint ||
       credentials.certificateSelfSigned !== true || !credentials.certificateExpiresAt || credentials.certificateExpiresAt <= new Date()) throw new ConflictException('Configure un certificado ficticio autofirmado y vigente para este RUC en BETA');
-    return { snapshot, fiscal, credentials };
+    return { snapshot, fiscal, credentials, printContext: detail.printContext };
   }
 
   private view(row: LocalXmlValidation | null) {

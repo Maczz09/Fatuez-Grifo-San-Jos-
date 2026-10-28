@@ -3,7 +3,7 @@ import { Controller, Get, Module } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
 import { Server, type Socket } from 'socket.io';
 import { Worker } from 'bullmq';
-import { bearer, identity, authorizedDocument, UUID, LIVE_QUEUE, redisConnection } from '@factuez/service-access';
+import { bearer, identity, authorizedDocument, privateJson, UUID, LIVE_QUEUE, redisConnection } from '@factuez/service-access';
 @Controller('health') class Health { @Get() health() { return { status: 'ok', service: 'realtime', transport: 'socket.io', fiscalTransmission: false }; } }
 @Module({ controllers: [Health] }) class AppModule {}
 
@@ -42,6 +42,19 @@ async function bootstrap() {
     })();
   }, 15000);
   const worker = new Worker(LIVE_QUEUE, async job => {
+    if (job.name === 'received.changed.v1') {
+      const id = job.data?.receivedDocumentId;
+      if (typeof id !== 'string' || !UUID.test(id)) return;
+      const sockets = [...io.sockets.sockets.values()];
+      for (let index = 0; index < sockets.length; index += 8) await Promise.all(sockets.slice(index, index + 8).map(async socket => {
+        try {
+          await check(socket);
+          const detail = await privateJson<{ id: string }>(process.env.RECEIVED_INTERNAL_URL ?? 'http://received-documents-service:3006', `/api/v1/received-documents/${id}`, socket.data.authorization);
+          if (detail.id === id && socket.connected) socket.emit('received.changed.v1', { eventId: String(job.id), receivedDocumentId: id });
+        } catch { /* Fresh reception API scope required; no broadcast of purchase metadata. */ }
+      }));
+      return;
+    }
     const documentId = job.data?.documentId;
     if (typeof documentId !== 'string' || !UUID.test(documentId)) return;
     // Ninguna sala global/por RUC proporcionada por el cliente. Reautorizar cada aviso.
@@ -59,6 +72,6 @@ async function bootstrap() {
   worker.on('error', () => {});
   const stop = async () => { clearInterval(timer); await worker.close(); await new Promise<void>(resolve => io.close(() => resolve())); await app.close(); };
   process.once('SIGTERM', () => void stop()); process.once('SIGINT', () => void stop());
-  await app.listen(3005, '0.0.0.0');
+  await app.listen(Number(process.env.PORT ?? 3005), '0.0.0.0');
 }
 void bootstrap();

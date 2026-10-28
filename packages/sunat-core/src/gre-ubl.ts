@@ -1,3 +1,4 @@
+import type { FrozenPrintPresentationV1 } from '@factuez/contracts';
 /** GRE remitente: perfil LOCAL acotado al motivo 04, no certificado ni aceptación fiscal. */
 export const GRE_QA_PROFILE = 'GRE-QA-09-MOTIVO04-v1';
 export const GRE_QA_WARNING = 'PRUEBA LOCAL · SIN VALIDEZ TRIBUTARIA · NO AUTORIZA TRASLADO';
@@ -15,6 +16,7 @@ export type GreQaInput = {
 export type GreQaSnapshot = GreQaInput & {
   id: string; localIdentifier: string; ublNumber: string; issueDate: string; issueTime: string;
   issuer: { ruc: string; legalName: string }; profile: typeof GRE_QA_PROFILE; environment: 'BETA';
+  branchId?: string; printPresentation?: FrozenPrintPresentationV1;
 };
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 function fail(message: string): never { throw new Error(message); }
@@ -73,7 +75,8 @@ const idAttrs = 'schemeName="Documento de Identidad" schemeAgencyName="PE:SUNAT"
 /** Sin firma: integrar el worker GRE con XmlSignerService rootKind=DespatchAdvice. */
 export function buildGreQaUbl(snapshot: GreQaSnapshot) {
   const { issuer } = snapshot;
-  const { id, localIdentifier, ublNumber, issueDate, issueTime, profile, environment, issuer: _issuer, ...input } = snapshot;
+  const { id, localIdentifier, ublNumber, issueDate, issueTime, profile, environment, issuer: _issuer,
+    branchId: _printBranchId, printPresentation: _presentation, ...input } = snapshot;
   const v = validateGreQaInput(input, issueDate);
   if (!UUID.test(id) || localIdentifier !== `GRE-QA-${id}` || !/^TQ00-[1-9]\d{0,7}$/.test(ublNumber) || !/^00\d{9}$/.test(issuer.ruc) || text(issuer.legalName,'razón social',250) !== issuer.legalName || !/^\d{4}-\d{2}-\d{2}$/.test(issueDate) || !/^\d{2}:\d{2}:\d{2}$/.test(issueTime) || profile !== GRE_QA_PROFILE || environment !== 'BETA') fail('Cabecera GRE QA inválida');
   const party = `<cac:Party><cac:PartyIdentification><cbc:ID schemeID="6" ${idAttrs}>${issuer.ruc}</cbc:ID></cac:PartyIdentification><cac:PartyLegalEntity><cbc:RegistrationName>${escape(issuer.legalName)}</cbc:RegistrationName></cac:PartyLegalEntity></cac:Party>`;

@@ -53,11 +53,16 @@ export class RbacBootstrapService implements OnApplicationBootstrap {
     for (const [code, name, description] of roleDefinitions) {
       const role = await this.prisma.role.upsert({
         where: { code },
-        create: { code, name, description, isSystem: true, active: true },
+        create: { code, name, description, isSystem: true, active: true, permissions: { create: DefaultRolePermissions[code].map(permissionCode => {
+          const permissionId = permissionsByApiCode.get(permissionCode);
+          if (!permissionId) throw new Error(`Permiso RBAC no registrado: ${permissionCode}`);
+          return { permissionId };
+        }) } },
         update: { name, description, isSystem: true, active: true },
       });
 
-      for (const permissionCode of DefaultRolePermissions[code]) {
+      // Los roles existentes conservan la matriz editada. Sólo ADMIN es inmutable.
+      for (const permissionCode of code === RoleCodes.ADMIN ? DefaultRolePermissions[code] : []) {
         const permissionId = permissionsByApiCode.get(permissionCode);
         if (!permissionId) throw new Error(`Permiso RBAC no registrado: ${permissionCode}`);
         await this.prisma.rolePermission.upsert({

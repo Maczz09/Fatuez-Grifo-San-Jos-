@@ -1,4 +1,5 @@
-FROM node:22-bookworm-slim
+ARG NODE_BASE_IMAGE=node:22-bookworm-slim
+FROM ${NODE_BASE_IMAGE}
 
 WORKDIR /workspace
 RUN corepack enable
@@ -12,6 +13,8 @@ RUN pnpm install --frozen-lockfile
 
 ARG NEXT_PUBLIC_API_BASE_URL=""
 ENV NEXT_PUBLIC_API_BASE_URL=${NEXT_PUBLIC_API_BASE_URL}
+ARG NEXT_PUBLIC_B2B_ADMIN_PROFILE="SSO"
+ENV NEXT_PUBLIC_B2B_ADMIN_PROFILE=${NEXT_PUBLIC_B2B_ADMIN_PROFILE}
 ENV NEXT_TELEMETRY_DISABLED=1
 
 RUN pnpm --filter @factuez/contracts build \

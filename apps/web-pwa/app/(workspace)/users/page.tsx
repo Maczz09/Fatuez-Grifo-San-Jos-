@@ -35,6 +35,8 @@ import {
   rolesText,
 } from "../../../features/workspace/common";
 import type { ManagedUser, Role } from "../../../features/workspace/types";
+import { ListPagination, pageWindow } from "../../../features/workspace/list-pagination";
+import { UserExtraPermissions } from "../../../features/workspace/user-extra-permissions";
 type Form = {
   username: string;
   fullName: string;
@@ -84,10 +86,12 @@ function Choice({
   );
 }
 export default function UsersPage() {
-  const { api, catalog, branchId, can, setDirty } = useWorkspace();
+  const { api, catalog, branchId, can, setDirty, user: actor } = useWorkspace();
   const users = useResource<ManagedUser[]>("/api/v1/users");
   const roles = useResource<Role[]>("/api/v1/roles");
   const [search, setSearch] = useState("");
+  const [page, setPage] = useState(1);
+  useEffect(() => { setPage(1); }, [search, branchId]);
   const [open, setOpen] = useState(false);
   const [target, setTarget] = useState<ManagedUser>();
   const [form, setForm] = useState<Form>(blank());
@@ -150,7 +154,7 @@ export default function UsersPage() {
         choices.some(
           (point) =>
             selected.includes(point.id) &&
-            point.series.some((counter) => counter.series === series),
+            point.series.some((counter) => counter.id === series),
         ),
       ),
     });
@@ -267,7 +271,7 @@ export default function UsersPage() {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {filtered.map((user) => (
+                {filtered.slice(pageWindow(filtered.length, page).start, pageWindow(filtered.length, page).end).map((user) => (
                   <TableRow key={user.id}>
                     <TableCell>
                       <p className="font-medium">{user.fullName}</p>
@@ -316,6 +320,7 @@ export default function UsersPage() {
                       </Badge>
                     </TableCell>
                     <TableCell className="text-right">
+                      {user.editable && actor?.scope.kind === "GLOBAL" && actor.roles.includes("ADMIN") && can("role.manage") && <div className="mb-2"><UserExtraPermissions userId={user.id} fullName={user.fullName} /></div>}
                       {user.editable && can("role.manage") ? (
                         <Button
                           variant="outline"
@@ -336,6 +341,7 @@ export default function UsersPage() {
               </TableBody>
             </Table>
           )}
+          {filtered && <ListPagination total={filtered.length} page={page} onChange={setPage} />}
         </CardContent>
       </Card>
       {roles.error && (

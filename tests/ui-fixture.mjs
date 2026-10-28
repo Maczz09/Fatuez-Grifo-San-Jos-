@@ -3,9 +3,13 @@
 import http from "node:http";
 import { createRequire } from "node:module";
 import { randomUUID } from "node:crypto";
+import { documentSample, guideSample, pngLogo } from './qa-print-formats.mjs';
+import { createStationAdminVisualFixture } from './station-admin.visual-fixture.mjs';
+import { receivedVisual } from './received-visual-fixture.mjs';
 const require = createRequire(import.meta.url);
 const {
   renderLocalDocumentPdf,
+  renderLocalTransportGuidePdf,
 } = require("../packages/pdf-renderer/dist/index.js");
 const {
   DefaultRolePermissions,
@@ -15,6 +19,7 @@ const {
 } = require("../packages/sunat-core/dist/index.js");
 if (!process.argv.includes("--visual-only"))
   throw new Error("Debe indicar --visual-only");
+const visualPort = process.argv.includes('--fresh-port') ? 3131 : 3101;
 const branches = [
   {
     id: "10000000-0000-4000-8000-000000000001",
@@ -53,8 +58,8 @@ const catalog = {
   companies: [
     {
       id: 1,
-      legalName: "GRIFO SAN JOSE S.R.L. · QA VISUAL",
-      ruc: "20450819230",
+      legalName: "EMISOR FICTICIO CENTRAL · QA VISUAL",
+      ruc: "00000000001",
       environment: "BETA",
     },
     {
@@ -102,9 +107,35 @@ const users = [
     series: points[0].series.map((counter) => counter.id),
   },
 ];
+const stationAdminVisual = createStationAdminVisualFixture(catalog);
 const documents = [];
 const intents = new Map();
 const visualSessions = new Map();
+const printProfiles = new Map();
+const printDefaults = { template: 'SAN_JOSE_V1', logoMode: 'DEFAULT', logoWidthMm: 40, logoAlignment: 'LEFT', showBranchAddress: true, footerNote: '' };
+function printContext(company, branchId, draft) {
+  const own = printProfiles.get(`${company.id}:${branchId ?? ''}`);
+  const issuer = printProfiles.get(`${company.id}:`);
+  let selected = own?.settings ? own : issuer?.settings ? issuer : undefined;
+  let effective = { ...(selected?.settings ?? printDefaults) }, logo = selected?.logo ?? null;
+  if (draft) {
+    if (draft.settings === null) { selected = branchId && issuer?.settings ? issuer : undefined; effective = { ...(selected?.settings ?? printDefaults) }; logo = selected?.logo ?? null; }
+    else { effective = { ...draft.settings }; if (effective.logoMode === 'CUSTOM') logo = draft.logoUpload ? pngLogo() : logo; else logo = null; }
+  }
+  const branch = branches.find(row => row.id === branchId);
+  return { own, issuer, selected, effective, logo, branch,
+    presentation: { version: 'factuez.print-presentation.v1', issuerRuc: company.ruc, branchId: branchId ?? null,
+      profileRevision: selected?.revision ?? 0, settings: effective, logo,
+      ...(branch ? { branchName: branch.name, branchAddress: branch.address } : {}) } };
+}
+function printStatus(company, branchId) {
+  const ctx = printContext(company, branchId);
+  return { version: 'factuez.print-settings.v1', companyId: company.id, ruc: company.ruc, branchId: branchId ?? null,
+    revision: ctx.own?.revision ?? 0, updatedAt: ctx.own?.updatedAt ?? null,
+    override: ctx.own?.settings ?? null, effective: ctx.effective,
+    source: ctx.selected ? branchId && ctx.selected === ctx.own ? 'BRANCH' : 'ISSUER' : 'DEFAULT',
+    logoPreviewDataUrl: ctx.logo ? `data:image/png;base64,${ctx.logo.base64}` : null, storageReady: true, fiscalTransmission: false };
+}
 const visualIdlePhase = process.argv.find(value => value.startsWith('--idle-phase='))?.split('=')[1] ?? 'active';
 if (!['active', 'warning', 'critical'].includes(visualIdlePhase)) throw new Error('Fase visual inválida');
 const visualUser = (role) => ({
@@ -129,7 +160,7 @@ http
       const proxy = http.request(
         {
           hostname: "127.0.0.1",
-          port: 3100,
+          port: process.argv.includes('--qa-web') ? 8091 : 3100,
           path: req.url,
           method: req.method,
           headers: { ...req.headers, host: "localhost:3100" },
@@ -150,7 +181,7 @@ http
       let text = "";
       for await (const chunk of req) {
         text += chunk;
-        if (text.length > 65536) throw new Error("Formulario demasiado grande");
+        if (text.length > (url.pathname.includes('/print-settings/') ? 512 * 1024 : 65536)) throw new Error("Formulario demasiado grande");
       }
       const body = text ? JSON.parse(text) : undefined;
       if (url.pathname.endsWith('/auth/browser-session/logout')) {
@@ -194,6 +225,38 @@ http
             ? "ADMIN"
             : undefined;
       if (!role) return json(res, { message: "Sesión QA requerida" }, 401);
+      const masterResult = stationAdminVisual(url.pathname, req.method, role, body);
+      if (masterResult) return json(res, masterResult.body, masterResult.status);
+      const printPath = url.pathname.match(/^\/api\/v1\/stations\/print-settings\/(\d+)(\/preview)?$/);
+      if (printPath) {
+        if (role !== 'ADMIN') return json(res, { message: 'QA visual: requiere ADMIN global' }, 403);
+        const company = catalog.companies.find(row => row.id === Number(printPath[1]) && /^00\d{9}$/.test(row.ruc));
+        const branchId = url.searchParams.get('branchId') ?? undefined;
+        if (!company || branchId && !branches.some(row => row.id === branchId && row.companyId === company.id))
+          return json(res, { message: 'QA visual de formatos sólo admite un RUC ficticio y su sede' }, 403);
+        if (printPath[2]) {
+          if (req.method !== 'POST' || !['01','03','07','08','09','31'].includes(body?.documentTypeCode) || !['a4','ticket'].includes(body?.format))
+            return json(res, { message: 'Vista previa ficticia inválida' }, 400);
+          const ctx = printContext(company, branchId, body.draft);
+          const guide = ['09', '31'].includes(body.documentTypeCode);
+          const snapshot = guide ? guideSample(body.documentTypeCode) : documentSample(body.documentTypeCode);
+          snapshot.branchId = branchId; snapshot.printPresentation = ctx.presentation;
+          if (!guide) snapshot.issuer.identityNumber = company.ruc;
+          const bytes = guide ? await renderLocalTransportGuidePdf(snapshot, body.format) : await renderLocalDocumentPdf(snapshot, body.format);
+          res.writeHead(200, { 'Content-Type': 'application/pdf', 'Cache-Control': 'private, no-store' });
+          return res.end(bytes);
+        }
+        if (req.method === 'POST') {
+          const key = `${company.id}:${branchId ?? ''}`, previous = printProfiles.get(key);
+          if (body.expectedRevision !== (previous?.revision ?? 0)) return json(res, { message: 'Revisión visual cambió' }, 409);
+          const ctx = printContext(company, branchId, body);
+          printProfiles.set(key, { settings: body.settings, logo: body.settings?.logoMode === 'CUSTOM' ? ctx.logo : null,
+            revision: (previous?.revision ?? 0) + 1, updatedAt: new Date().toISOString() });
+        }
+        return json(res, printStatus(company, branchId));
+      }
+      const receptionView = receivedVisual(url, req.method, role);
+      if (receptionView) return json(res, receptionView.body, receptionView.status ?? 200);
       if (url.pathname.endsWith("/auth/me"))
         return json(res, {
           sub: users[role === "ADMIN" ? 0 : 1].id,
@@ -212,11 +275,15 @@ http
                   series: points[0].series.map((counter) => counter.id),
                 },
         });
+      if (url.pathname === '/api/v1/gre-qa/capabilities')
+        return json(res, { enabled: true, fiscalTransmission: false, ubigeos: { '150101': 'Distrito FICTICIO del fixture' }, itemUnits: ['NIU', 'LTR', 'GLL', 'KGM'] });
+      if (url.pathname === '/api/v1/gre-qa' && req.method === 'GET') return json(res, { items: [] });
       if (url.pathname.endsWith("/catalog/issuance"))
         return json(
           res,
           role === "ADMIN"
-            ? catalog
+            ? { ...catalog, companies: catalog.companies.filter(c => c.active), branches: branches.filter(b => b.active && catalog.companies.find(c => c.id === b.companyId)?.active),
+                emissionPoints: points.filter(p => p.active && branches.find(b => b.id === p.branchId)?.active && catalog.companies.find(c => c.id === p.companyId)?.active).map(p => ({ ...p, series: p.series.filter(s => s.active) })) }
             : {
                 ...catalog,
                 companies: catalog.companies.slice(0, 1),
@@ -344,6 +411,8 @@ http
         }
         const rows = documents.filter(
           (doc) =>
+            (url.searchParams.get('dataSource') !== 'BUSINESS' || !/^00\d{9}$/.test(doc.issuerRuc)) &&
+            (url.searchParams.get('dataSource') !== 'SYNTHETIC' || /^00\d{9}$/.test(doc.issuerRuc)) &&
             (!url.searchParams.get("companyId") ||
               String(doc.companyId) === url.searchParams.get("companyId")) &&
             (!url.searchParams.get("branchId") ||
@@ -444,8 +513,8 @@ http
       json(res, { message: error.message }, 400);
     }
   })
-  .listen(3101, "127.0.0.1", () =>
+  .listen(visualPort, "127.0.0.1", () =>
     console.log(
-      "QA visual temporal: http://localhost:3101 · Datos ficticios en memoria; no valida backend real.",
+      `QA visual temporal: http://127.0.0.1:${visualPort} · Datos ficticios en memoria; no valida backend real.`,
     ),
   );

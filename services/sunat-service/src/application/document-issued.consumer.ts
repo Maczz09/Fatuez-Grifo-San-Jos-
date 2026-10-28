@@ -1,3 +1,4 @@
+import { ProductionIssuanceRepository } from './production-issuance.repository';
 import { readFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
@@ -16,7 +17,6 @@ import {
   type SunatStatusChangedEventV1,
 } from "@factuez/contracts";
 import { buildInvoiceUbl } from "@factuez/sunat-core";
-import { renderLocalDocumentPdf } from "@factuez/pdf-renderer";
 import { ArtifactStore } from "../infrastructure/artifact-store";
 import { PrismaService } from "../infrastructure/prisma.service";
 import { BetaIssuanceRepository } from './beta-issuance.repository';
@@ -35,10 +35,12 @@ export class DocumentIssuedConsumer
   implements OnApplicationBootstrap, OnModuleDestroy
 {
   private worker?: Worker;
+  private closing?:Promise<void>;
   constructor(
     private readonly prisma: PrismaService,
     private readonly artifacts: ArtifactStore,
     @Optional() private readonly beta?: BetaIssuanceRepository,
+    @Optional() private readonly production?: ProductionIssuanceRepository,
   ) {}
 
   onApplicationBootstrap() {
@@ -115,28 +117,12 @@ export class DocumentIssuedConsumer
       fileName,
       xml,
     );
-    const ticket = await this.artifacts.put(
-      event.payload.documentId,
-      `${fileName}-ticket-PRUEBA.pdf`,
-      await renderLocalDocumentPdf(event.payload, "ticket"),
-    );
-    const a4 = await this.artifacts.put(
-      event.payload.documentId,
-      `${fileName}-a4-PRUEBA.pdf`,
-      await renderLocalDocumentPdf(event.payload, "a4"),
-    );
     const generated = [
       {
         ...artifact,
         kind: "UNSIGNED_XML" as const,
         mediaType: "application/xml",
       },
-      {
-        ...ticket,
-        kind: "PDF_TICKET_80MM" as const,
-        mediaType: "application/pdf",
-      },
-      { ...a4, kind: "PDF_A4" as const, mediaType: "application/pdf" },
     ];
     const statusEvent: SunatStatusChangedEventV1 = {
       eventId: randomUUID(),
@@ -147,13 +133,14 @@ export class DocumentIssuedConsumer
       producer: "sunat-service",
       payload: {
         documentId: event.payload.documentId,
+        ...(environment === "PRODUCTION" ? { environment: "PRODUCTION", provenance: "SUNAT_PRODUCTION", documentTypeCode: event.payload.documentTypeCode } : {}),
         status: "BUILDING",
         description:
-          "UBL y PDF locales preparados; firma y envío deshabilitados hasta homologación Beta",
+          "Documento preparado; pendiente de autorización de despacho del emisor",
       },
     };
 
-    const betaStage = this.beta?.stageOperation(event);
+    const betaStage = (environment === 'PRODUCTION' ? this.production : this.beta)?.stageOperation(event);
     await this.prisma.$transaction([
       ...generated.map((file) =>
         this.prisma.documentArtifact.upsert({
@@ -193,7 +180,6 @@ export class DocumentIssuedConsumer
     ]);
   }
 
-  async onModuleDestroy() {
-    await this.worker?.close();
-  }
+  close(){return this.closing??=Promise.resolve().then(()=>this.worker?.close()).then(()=>{},()=>{throw Error('DOCUMENT_ISSUED_CONSUMER_CLOSE_FAILED');});}
+  onModuleDestroy(){return this.close();}
 }

@@ -115,6 +115,13 @@ services:
     environment:
       <<: *runtime-environment
       DB_NAME: factuez_mailer
+      MAILER_DATABASE_NAME: factuez_mailer
+      SMTP_SETTINGS_KEY_FILE: /run/secrets/smtp_settings_key
+      SMTP_SETTINGS_KEY_VERSION: "1"
+      SERVER_SMTP_ENABLED: ${SERVER_SMTP_ENABLED:-false}
+      SERVER_SMTP_DOCUMENTS_ENABLED: ${SERVER_SMTP_DOCUMENTS_ENABLED:-false}
+      SMTP_CONNECTION_DIAGNOSTICS_ENABLED: ${SMTP_CONNECTION_DIAGNOSTICS_ENABLED:-false}
+      SMTP_APPROVED_HOSTS: ${SMTP_APPROVED_HOSTS:-}
       DB_USER: factuez_mailer
       DB_PASSWORD_FILE: /run/secrets/mailer_db_password
     secrets: [mailer_db_password]
@@ -178,6 +185,10 @@ services:
       DB_USER: factuez_billing
       DB_PASSWORD_FILE: /run/secrets/billing_db_password
       PORT: "3002"
+      PRINT_SETTINGS_ENABLED: "true"
+      PRINT_BRANDING_ROOT: /data/print-branding
+    volumes:
+      - print_branding_data:/data/print-branding
     depends_on:
       migrate-billing: { condition: service_completed_successfully }
       identity-service: { condition: service_healthy }
@@ -206,6 +217,7 @@ services:
       APP_MASTER_KEY_FILE: /run/secrets/app_master_key
       INTERNAL_SERVICE_TOKEN_FILE: /run/secrets/internal_service_token
       ARTIFACTS_ROOT: /data/artifacts
+      PRINT_SETTINGS_ENABLED: "true"
       PRIVATE_STORAGE_ROOT: /data/private
       BILLING_INTERNAL_URL: http://billing-service:3002
       IDENTITY_INTERNAL_URL: http://identity-service:3001
@@ -244,6 +256,13 @@ services:
     environment:
       <<: *runtime-environment
       DB_NAME: factuez_mailer
+      MAILER_DATABASE_NAME: factuez_mailer
+      SMTP_SETTINGS_KEY_FILE: /run/secrets/smtp_settings_key
+      SMTP_SETTINGS_KEY_VERSION: "1"
+      SERVER_SMTP_ENABLED: ${SERVER_SMTP_ENABLED:-false}
+      SERVER_SMTP_DOCUMENTS_ENABLED: ${SERVER_SMTP_DOCUMENTS_ENABLED:-false}
+      SMTP_CONNECTION_DIAGNOSTICS_ENABLED: ${SMTP_CONNECTION_DIAGNOSTICS_ENABLED:-false}
+      SMTP_APPROVED_HOSTS: ${SMTP_APPROVED_HOSTS:-}
       DB_USER: factuez_mailer
       DB_PASSWORD_FILE: /run/secrets/mailer_db_password
       PORT: "3004"
@@ -253,6 +272,7 @@ services:
       MAIL_CONCURRENCY: ${MAIL_CONCURRENCY:-2}
     secrets:
       - mailer_db_password
+      - smtp_settings_key
       - redis_password
       - jwt_public_key
       - app_master_key
@@ -293,6 +313,65 @@ services:
       - jwt_public_key
       - internal_service_token
 
+  # Reception owns a separate DB; no Billing/SUNAT schema, Outbox or counters.
+  received-postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: factuez_received
+      POSTGRES_USER: factuez_received
+      POSTGRES_PASSWORD_FILE: /run/secrets/received_db_password
+      TZ: America/Lima
+    secrets: [received_db_password]
+    volumes: [received_data:/var/lib/postgresql/data]
+    networks: [factuez-internal]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U factuez_received -d factuez_received"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+  received-documents-service: &received-onprem-runtime
+    image: ${FACTUEZ_RECEIVED_IMAGE:-factuez/received-documents-service:local}
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.service
+      args: { SERVICE_NAME: "@factuez/received-documents-service", SERVICE_PATH: "services/received-documents-service" }
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      TZ: America/Lima
+      PORT: "3006"
+      DB_HOST: received-postgres
+      DB_PORT: "5432"
+      DB_NAME: factuez_received
+      DB_USER: factuez_received
+      DB_PASSWORD_FILE: /run/secrets/received_db_password
+      IDENTITY_INTERNAL_URL: http://identity-service:3001
+      BILLING_INTERNAL_URL: http://billing-service:3002
+      REDIS_HOST: redis
+      REDIS_PASSWORD_FILE: /run/secrets/redis_password
+      WORKSPACE_LIVE_ENABLED: "true"
+      RECEIVED_SETTINGS_KEY_FILE: /run/secrets/reception_settings_key
+      RECEIVED_LOCAL_FIXTURE_ENABLED: "false"
+      RECEIVED_QA_USE_APP_KEY: "false"
+      RECEIVED_LIVE_READ_ALLOWED: "false"
+      RECEIVED_IMAP_APPROVED_HOSTS: ""
+    secrets: [received_db_password, reception_settings_key, redis_password]
+    networks: [factuez-internal]
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"fetch('http://127.0.0.1:3006/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+  received-sync-worker:
+    <<: *received-onprem-runtime
+    command: ["node", "services/received-documents-service/dist/automation.worker.js"]
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"fetch('http://127.0.0.1:3007/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
   realtime-service:
     restart: unless-stopped
     image: ${FACTUEZ_REALTIME_IMAGE:-factuez/realtime-service:local}
@@ -304,6 +383,11 @@ services:
       REDIS_PORT: "6379"
       REDIS_PASSWORD_FILE: /run/secrets/redis_password
       IDENTITY_JWKS_URL: http://identity-service:3001/.well-known/jwks.json
+      IDENTITY_INTERNAL_URL: http://identity-service:3001
+      BILLING_INTERNAL_URL: http://billing-service:3002
+      RECEIVED_INTERNAL_URL: http://received-documents-service:3006
+      WORKSPACE_LIVE_ENABLED: "true"
+      WS_ALLOWED_ORIGINS: ${FACTUEZ_WS_ALLOWED_ORIGINS:-https://factuez.grifosanjose.lan}
     secrets: [redis_password, jwt_public_key]
     depends_on:
       identity-service: { condition: service_healthy }
@@ -377,8 +461,14 @@ volumes:
   redis_data:
   artifacts_data:
   private_data:
+  print_branding_data:
+  received_data:
 
 secrets:
+  received_db_password:
+    file: ${FACTUEZ_SECRETS_DIR:-./secrets}/received_db_password.txt
+  reception_settings_key:
+    file: ${FACTUEZ_SECRETS_DIR:-./secrets}/reception_settings_key.txt
   postgres_admin_password:
     file: ${FACTUEZ_SECRETS_DIR:-./secrets}/postgres_admin_password.txt
   identity_db_password:
@@ -387,6 +477,8 @@ secrets:
     file: ${FACTUEZ_SECRETS_DIR:-./secrets}/billing_db_password.txt
   sunat_db_password:
     file: ${FACTUEZ_SECRETS_DIR:-./secrets}/sunat_db_password.txt
+  smtp_settings_key:
+    file: ${FACTUEZ_SECRETS_DIR:-./secrets}/smtp_settings_key.txt
   mailer_db_password:
     file: ${FACTUEZ_SECRETS_DIR:-./secrets}/mailer_db_password.txt
   reporting_db_password:

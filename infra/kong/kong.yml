@@ -2,11 +2,23 @@ _format_version: "3.0"
 _transform: true
 
 services:
+  - name: received-documents-service
+    url: http://received-documents-service:3006
+    routes:
+      - name: received-documents-route
+        paths: [/api/v1/received-documents]
+        strip_path: false
+        protocols: [http, https]
+    plugins:
+      - name: request-size-limiting
+        config:
+          allowed_payload_size: 18
+          size_unit: megabytes
   - name: identity-service
     url: http://identity-service:3001
     routes:
       - name: identity-auth-route
-        paths: [/api/v1/auth, /api/v1/users, /api/v1/roles]
+        paths: [/api/v1/auth, /api/v1/users, /api/v1/roles, /api/v1/b2b-admin]
         strip_path: false
         protocols: [http, https]
 

@@ -240,9 +240,10 @@ describe('BetaSupplementCommandRepository: own Billing reservation, offline only
   it.each(['PENDING', 'REJECTED', 'PERMANENT_ERROR', 'VOIDED', 'UNKNOWN'])('claimed acceptance cannot replace own Billing state %s', async status => {
     const h = mockPrisma(original(), status); await expect(h.repo.reserve(noteCommand(), actor)).rejects.toThrow('aceptación previa propia'); expect(writes(h)).toEqual([]);
   });
-  it.each(['issuer', 'production', 'branch', 'point', 'establishment', 'original-counter', 'note-counter', 'snapshot', 'number'])('rejects own %s mismatch before numeric writes', async scenario => {
+  it.each(['issuer', 'issuer-inactive', 'production', 'branch', 'point', 'establishment', 'original-counter', 'note-counter', 'snapshot', 'number'])('rejects own %s mismatch before numeric writes', async scenario => {
     const h = mockPrisma();
     if (scenario === 'issuer') h.state.companies[0].ruc = '20131312955';
+    if (scenario === 'issuer-inactive') (h.state.companies[0] as any).active = false;
     if (scenario === 'production') h.state.companies[0].environment = 'PRODUCTION';
     if (scenario === 'branch') h.state.branches[0].companyId = 2;
     if (scenario === 'point') h.state.points[0].active = false;

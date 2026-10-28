@@ -19,11 +19,12 @@ const sha256 = (bytes: Buffer) => createHash('sha256').update(bytes).digest('hex
 const queueName = 'mail-local-qa-v1';
 @Injectable()
 export class LocalMail implements OnApplicationBootstrap, OnModuleDestroy {
-  private queue?: Queue; private worker?: Worker; private timer?: NodeJS.Timeout; private running = false;
+  private queue?: Queue; private worker?: Worker; private timer?: NodeJS.Timeout;
+  private stopped = false; private dispatching?: Promise<void>; private closing?: Promise<void>;
   private readonly live = new LivePublisher();
   private readonly root = resolve(process.env.MAIL_QA_ROOT ?? '/data/mail-qa');
   constructor(private readonly prisma: PrismaService, private readonly smtp: LocalCaptureSmtp) {}
-  private enabled() { if (process.env.LOCAL_MAIL_QA_ENABLED !== 'true') throw new ServiceUnavailableException('Correo de prueba deshabilitado'); }
+  private enabled() { if (this.stopped || process.env.LOCAL_MAIL_QA_ENABLED !== 'true') throw new ServiceUnavailableException('Correo de prueba deshabilitado'); }
   private async context(id: string, authorization: string) {
     this.enabled(); const user = await identity(authorization, 'document.email');
     // El circuito firmado QA sólo se expone a ADMIN GLOBAL, también en su microservicio propietario.
@@ -88,19 +89,25 @@ export class LocalMail implements OnApplicationBootstrap, OnModuleDestroy {
     await this.live.changed(id); return this.view(row);
   }
   onApplicationBootstrap() {
-    if (process.env.LOCAL_MAIL_QA_ENABLED !== 'true') return;
+    if (this.stopped || this.queue || process.env.LOCAL_MAIL_QA_ENABLED !== 'true') return;
     this.queue = new Queue(queueName, { connection: redisConnection() });
     this.queue.on('error', () => {});
     this.worker = new Worker(queueName, job => this.process(String(job.data.id)), { connection: redisConnection(), concurrency: 1 });
     this.worker.on('error', () => {}); this.timer = setInterval(() => void this.dispatch(), 2000);
   }
-  private async dispatch() {
-    if (this.running || !this.queue) return; this.running = true;
+  private dispatch(): Promise<void> {
+    if (this.stopped || !this.queue) return Promise.resolve();
+    return this.dispatching ??= this.dispatchBatch().finally(() => { this.dispatching = undefined; });
+  }
+  private async dispatchBatch() {
     try {
       await this.prisma.localQaMail.updateMany({ where: { status: 'SENDING', claimedAt: { lt: new Date(Date.now() - 60000) } }, data: { status: 'UNKNOWN', description: 'Resultado incierto; revisar captura antes de reenviar' } });
       const rows = await this.prisma.localQaMail.findMany({ where: { status: { in: ['QUEUED','RETRYABLE_ERROR'] }, nextAttemptAt: { lte: new Date() } }, take: 20 });
-      for (const row of rows) await this.queue.add('capture', { id: row.id }, { jobId: `${row.id}-${row.attempt}`, attempts: 1, removeOnComplete: 100, removeOnFail: 100 });
-    } catch { /* PostgreSQL conserva la tarea. */ } finally { this.running = false; }
+      for (const row of rows) {
+        if (this.stopped) break;
+        await this.queue!.add('capture', { id: row.id }, { jobId: `${row.id}-${row.attempt}`, attempts: 1, removeOnComplete: 100, removeOnFail: 100 });
+      }
+    } catch { /* PostgreSQL conserva la tarea. */ }
   }
   async process(id: string) {
     this.enabled(); if (!UUID.test(id)) return;
@@ -128,5 +135,19 @@ export class LocalMail implements OnApplicationBootstrap, OnModuleDestroy {
     }
     await this.live.changed(row.documentId);
   }
-  async onModuleDestroy() { if (this.timer) clearInterval(this.timer); await this.worker?.close(); await this.queue?.close(); await this.live.close(); }
+  close(): Promise<void> {
+    if (this.closing) return this.closing;
+    this.stopped = true;
+    if (this.timer) clearInterval(this.timer);
+    this.closing = (async () => {
+      let failed = false;
+      try { await this.dispatching; } catch { failed = true; }
+      try { await this.worker?.close(); } catch { failed = true; }
+      try { await this.queue?.close(); } catch { failed = true; }
+      try { await this.live.close(); } catch { failed = true; }
+      if (failed) throw Error('LOCAL_MAIL_CLOSE_FAILED');
+    })();
+    return this.closing;
+  }
+  onModuleDestroy() { return this.close(); }
 }

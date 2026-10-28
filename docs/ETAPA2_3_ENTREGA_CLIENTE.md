@@ -80,6 +80,28 @@ Los runners de historial/evidencia SYNTHETIC mantienen sus contratos y aislamien
 
 ## Lo que sigue pendiente
 
+### Complemento recibido el 06/10/2026: muestra GT tipo 31
+
+Se revisaron offline cuatro archivos autorizados de una misma guía transportista:
+XML firmado, CDR XML, ZIP del CDR y PDF. Firma/digest del XML correctos con dos
+verificadores independientes; PDF/hash/QR y referencias de la respuesta
+correspondientes. No se acredita confianza PKI sólo con certificados embebidos.
+
+**Incidencia:** el digest del CDR no coincide con el contenido recibido; ambos
+verificadores lo rechazan. El ZIP contiene exactamente ese mismo XML. El texto
+reporta código 0 y tres observaciones, pero no se considera aceptación
+autenticada. Solicitar nuevamente el ZIP original, sin editar ni recomprimir.
+
+La entrega cubre una muestra GT 31, no los XML/CDR de los otros seis tipos ni
+la copia/export completo. No se alteró el expediente versionado servido por
+la API, datos de empresa, perfiles SYNTHETIC, producción o gates. Esta revisión
+no cierra fases 2/3 ni autoriza emisión/importación/corte.
+
+Informe detallado local (ignorado por Git):
+`output/reviews/Revision_XML_CDR_GT_Fases_2_3_20261006.md`.
+
+### Pendientes restantes
+
 Fase 2: originales XML/CDR, mapa completo y nombre confirmado, configuración
 directa por los responsables de cada emisor, confianza/identidad y definición
 autorizada del piloto Beta. Mavric debe terminar y verificar los pendientes

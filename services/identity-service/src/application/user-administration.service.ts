@@ -1,3 +1,4 @@
+import type { Phase8AdminUserResourceResolver, Phase8AdminUserResourceRequest } from '@factuez/service-access/dist/b2b-phase8-admin-wire';
 import {
   BadRequestException,
   ConflictException,
@@ -8,11 +9,12 @@ import {
 } from "@nestjs/common";
 import {
   canDelegate,
-  DefaultRolePermissions,
+  PermissionCodes,
   RoleCodes,
   type AccessTokenClaims,
   type AccessScope,
   type RoleCode,
+  type PermissionCode,
 } from "@factuez/contracts";
 import { PasswordService } from "./password.service";
 import { PrismaService } from "../infrastructure/prisma.service";
@@ -55,6 +57,11 @@ const uuid =
 
 @Injectable()
 export class UserAdministrationService {
+  private ownerResources?: Phase8AdminUserResourceResolver;
+  static createWithOwnerResources(prisma: PrismaService, passwords: PasswordService, resolver: Phase8AdminUserResourceResolver) {
+    const service = new UserAdministrationService(prisma, passwords);
+    service.ownerResources = resolver; return service;
+  }
   constructor(
     private readonly prisma: PrismaService,
     private readonly passwords: PasswordService,
@@ -86,6 +93,7 @@ export class UserAdministrationService {
     const roles = await this.prisma.role.findMany({
       where: { active: true },
       orderBy: { code: "asc" },
+      include: { permissions: { include: { permission: true } } },
     });
     return roles.map(
       (role: {
@@ -93,9 +101,11 @@ export class UserAdministrationService {
         code: string;
         name: string;
         description: string | null;
+        permissions: Array<{ permission: { name: string } }>;
       }) => ({
         ...role,
-        permissions: DefaultRolePermissions[role.code as RoleCode] ?? [],
+        permissions: role.permissions.map(item => item.permission.name),
+        editable: actor.scope.kind === "GLOBAL" && actor.roles.includes(RoleCodes.ADMIN) && role.code !== RoleCodes.ADMIN,
         assignable:
           actor.scope.kind === "GLOBAL" ||
           canDelegate(actor, [role.code as RoleCode], actor.scope),
@@ -103,11 +113,41 @@ export class UserAdministrationService {
     );
   }
 
+  async updateRole(code: string, input: unknown, actor: AccessTokenClaims) {
+    if (actor.scope.kind !== "GLOBAL" || !actor.roles.includes(RoleCodes.ADMIN) || !actor.permissions.includes(PermissionCodes.ROLE_MANAGE))
+      throw new ForbiddenException("Sólo el administrador general puede modificar roles");
+    if (!Object.values(RoleCodes).includes(code as RoleCode) || code === RoleCodes.ADMIN)
+      throw new BadRequestException("El rol de administrador general está protegido");
+    const body = input as { permissions?: unknown; expectedPermissions?: unknown };
+    const valid = (value: unknown): value is PermissionCode[] => Array.isArray(value) && value.length <= Object.keys(PermissionCodes).length &&
+      new Set(value).size === value.length && value.every(item => Object.values(PermissionCodes).includes(item));
+    if (!body || Array.isArray(body) || Object.keys(body).some(key => !["permissions", "expectedPermissions"].includes(key)) || !valid(body.permissions) || !valid(body.expectedPermissions))
+      throw new BadRequestException("Permisos inválidos");
+    return this.prisma.$transaction(async transaction => {
+      const tx = transaction as unknown as PrismaService;
+      await tx.$queryRawUnsafe('SELECT "id" FROM "Role" WHERE "code"::text = $1 FOR UPDATE', code);
+      const role = await tx.role.findUnique({ where: { code: code as RoleCode }, include: { permissions: { include: { permission: true } }, users: { select: { userId: true } } } });
+      if (!role?.active) throw new NotFoundException("Rol no disponible");
+      const previous = role.permissions.map(item => item.permission.name).sort();
+      if (JSON.stringify(previous) !== JSON.stringify([...(body.expectedPermissions as PermissionCode[])].sort())) throw new ConflictException("El rol cambió. Actualice antes de guardar");
+      const permissions = await tx.permission.findMany({ where: { name: { in: body.permissions as PermissionCode[] } } });
+      if (permissions.length !== (body.permissions as PermissionCode[]).length) throw new BadRequestException("Permiso no disponible");
+      await tx.rolePermission.deleteMany({ where: { roleId: role.id } });
+      await tx.rolePermission.createMany({ data: permissions.map(permission => ({ roleId: role.id, permissionId: permission.id })) });
+      const userIds = role.users.map(item => item.userId);
+      await tx.user.updateMany({ where: { id: { in: userIds } }, data: { authVersion: { increment: 1 } } });
+      await tx.refreshSession.updateMany({ where: { userId: { in: userIds }, revokedAt: null }, data: { revokedAt: new Date() } });
+      await tx.auditLog.create({ data: { userId: actor.sub, action: "role.permissions.updated", entityType: "Role", entityId: role.id, metadata: { before: previous, after: body.permissions as PermissionCode[], affectedUsers: userIds.length } } });
+      return { code, permissions: body.permissions, affectedUsers: userIds.length };
+    });
+  }
+
   async create(
     input: CreateUserInput,
     actor: AccessTokenClaims,
-    authorization: string,
+    authorization: string | object,
   ) {
+    if (this.ownerResources && typeof authorization === 'string') throw new ForbiddenException('Se requiere capacidad propietaria');
     if (
       typeof input?.username !== "string" ||
       !/^[a-zA-Z0-9._-]{3,80}$/.test(input.username.trim())
@@ -129,12 +169,17 @@ export class UserAdministrationService {
         "No puede delegar esos roles, sedes, puntos o series",
       );
     }
-    await this.validateResources(input, authorization);
+    const ownerRequest: Phase8AdminUserResourceRequest = { action: 'USERS_CREATE', payload: input, actor, selection: input };
+    await this.validateResources(input, authorization, ownerRequest);
     const passwordHash = await this.passwords.hash(input.password);
     const roles = await this.resolveRoles(input.roles);
+    await this.assertRoleDelegation(roles.map(role => role.id), actor);
     try {
       return await this.prisma.$transaction(async (transaction) => {
         const tx = transaction as unknown as PrismaService;
+        await this.lockRoles(tx, roles.map(role => role.id));
+        await this.assertRoleDelegation(roles.map(role => role.id), actor, tx);
+        if (typeof authorization !== 'string') await this.validateResources(input, authorization, ownerRequest);
         const user = await tx.user.create({
           data: {
             username: input.username.trim(),
@@ -174,6 +219,7 @@ export class UserAdministrationService {
             metadata: { roles: input.roles, scope },
           },
         });
+        if (typeof authorization !== 'string') await this.validateResources(input, authorization, ownerRequest);
         return this.view(user as UserRecord);
       });
     } catch (error) {
@@ -187,8 +233,9 @@ export class UserAdministrationService {
     userId: string,
     input: UpdateUserAccessInput,
     actor: AccessTokenClaims,
-    authorization: string,
+    authorization: string | object,
   ) {
+    if (this.ownerResources && typeof authorization === 'string') throw new ForbiddenException('Se requiere capacidad propietaria');
     if (!uuid.test(userId))
       throw new BadRequestException("Identificador inválido");
     if (userId === actor.sub)
@@ -235,8 +282,14 @@ export class UserAdministrationService {
           throw new ForbiddenException("Asignación fuera de sus facultades");
         // Revocar una cuenta no debe depender de Billing ni de maestros activos.
         // La reactivación sí verifica de nuevo todos los recursos.
-        if (merged.active) await this.validateResources(merged, authorization);
+        const ownerRequest: Phase8AdminUserResourceRequest = { action: 'USERS_UPDATE', id: userId, payload: input, actor, selection: merged };
+        if (merged.active || typeof authorization !== 'string') await this.validateResources(merged, authorization, ownerRequest);
         const roles = await this.resolveRoles(merged.roles);
+        if (merged.active) {
+          await this.lockRoles(tx, roles.map(role => role.id));
+          await this.assertRoleDelegation(roles.map(role => role.id), actor, tx);
+        }
+        if (typeof authorization !== 'string') await this.validateResources(merged, authorization, ownerRequest);
         await tx.userRoleAssignment.deleteMany({ where: { userId } });
         await tx.userBranch.deleteMany({ where: { userId } });
         await tx.userEmissionPoint.deleteMany({ where: { userId } });
@@ -285,6 +338,7 @@ export class UserAdministrationService {
             metadata: JSON.parse(JSON.stringify({ before, after })),
           },
         });
+        if (typeof authorization !== 'string') await this.validateResources(merged, authorization, ownerRequest);
         return after;
       });
     } catch (error) {
@@ -384,6 +438,15 @@ export class UserAdministrationService {
       throw new BadRequestException("Rol no disponible");
     return roles;
   }
+  private async lockRoles(tx: PrismaService, roleIds: string[]) {
+    for (const id of [...new Set(roleIds)].sort()) await tx.$queryRawUnsafe('SELECT "id" FROM "Role" WHERE "id" = $1::uuid FOR SHARE', id);
+  }
+  private async assertRoleDelegation(roleIds: string[], actor: AccessTokenClaims, tx = this.prisma) {
+    if (actor.scope.kind === "GLOBAL" && actor.roles.includes(RoleCodes.ADMIN)) return;
+    const permissions = await tx.rolePermission.findMany({ where: { roleId: { in: roleIds } }, include: { permission: true } });
+    if (permissions.some(item => !actor.permissions.includes(item.permission.name as PermissionCode)))
+      throw new ForbiddenException("No puede delegar permisos que no posee");
+  }
   private async validateResources(
     input: {
       roles: RoleCode[];
@@ -391,8 +454,15 @@ export class UserAdministrationService {
       emissionPointIds: string[];
       series: string[];
     },
-    authorization: string,
+    authorization: string | object,
+    ownerRequest?: Phase8AdminUserResourceRequest,
   ) {
+    if (this.ownerResources && typeof authorization === 'string') throw new ForbiddenException('Se requiere capacidad propietaria');
+    if (typeof authorization !== 'string') {
+      if (!this.ownerResources || !ownerRequest) throw new ServiceUnavailableException('Resolvedor propietario de recursos no disponible');
+      await this.ownerResources.validateUserResources(authorization, ownerRequest);
+      return;
+    }
     if (input.roles.includes(RoleCodes.ADMIN)) return;
     // Billing es el único propietario de sedes y series. Identity conserva IDs externos,
     // nunca consulta ni escribe tablas de otra base de datos.

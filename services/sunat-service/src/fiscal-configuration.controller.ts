@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Header, Param, Post, Req, UseGuards } from "@nestjs/common";
+import { Body, Controller, Get, Header, Param, Post, Query, Req, UseGuards } from "@nestjs/common";
 import { ConfigurationGuard, type ConfigurationRequest } from "./auth/configuration.guard";
 import { FiscalConfigurationService, type ConfigurationInput } from "./application/fiscal-configuration.service";
 
@@ -6,6 +6,11 @@ import { FiscalConfigurationService, type ConfigurationInput } from "./applicati
 @UseGuards(ConfigurationGuard)
 export class FiscalConfigurationController {
   constructor(private readonly configuration: FiscalConfigurationService) {}
+  @Get(":companyId/:environment/audit")
+  @Header("Cache-Control", "private, no-store")
+  audit(@Param("companyId") companyId: string, @Param("environment") environment: string, @Query("page") page: string | undefined, @Req() request: ConfigurationRequest) {
+    return this.configuration.audit(companyId, environment, request.headers.authorization!, page);
+  }
   @Get(":companyId/:environment")
   @Header("Cache-Control", "private, no-store")
   status(@Param("companyId") companyId: string, @Param("environment") environment: string, @Req() request: ConfigurationRequest) {

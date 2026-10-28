@@ -323,6 +323,15 @@ describe('application activation and routing remain hard closed (source/config o
       walk(ast, node => {
         if (!ts.isIdentifier(node) && !ts.isStringLiteral(node) && !ts.isNoSubstitutionTemplateLiteral(node)) return;
         if (!/FinancialLedgerCandidate(?:Service|Repository)|assertFinancialLedgerCandidateActivation|financial-ledger-candidate\.(?:service|repository)/.test(node.text)) return;
+        // The isolated composition depends only on the repository's TS port.
+        // Permit erased type references, not runtime construction/registration.
+        if(path==='services/billing-service/src/application/verified-financial-commit.ts'){
+          for(let p:ts.Node|undefined=node.parent;p;p=p.parent){
+            if(ts.isTypeNode(p))return;
+            if(ts.isImportDeclaration(p)&&p.importClause?.isTypeOnly)return;
+            if(ts.isStatement(p))break;
+          }
+        }
         // Internal DI registration is safe only because the separately checked
         // constructors are inert and the service's first statement is the gate.
         if (path === 'services/billing-service/src/app.module.ts') {
@@ -343,6 +352,9 @@ describe('application activation and routing remain hard closed (source/config o
         references.push(node.text);
       });
       expect(references, path).toEqual([]);
+    }
+    for(const path of ['services/billing-service/src/app.module.ts','services/sunat-service/src/app.module.ts']){
+      expect(read(path)).not.toMatch(/VerifiedFinancialCommit|VerifiedSyntheticCorrectionReservations|createBetaCorrectionOwnerAssembly/);
     }
   });
 

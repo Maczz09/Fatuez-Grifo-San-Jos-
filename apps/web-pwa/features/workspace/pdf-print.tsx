@@ -1,6 +1,6 @@
 "use client";
 import { useEffect, useRef, useState } from 'react';
-import { Printer, ExternalLink } from 'lucide-react';
+import { Printer, ExternalLink, FileText, LoaderCircle } from 'lucide-react';
 import { Button } from '@factuez/ui/components/button';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from '@factuez/ui/components/dialog';
 import { useWorkspace } from './provider';
@@ -11,13 +11,28 @@ export const PRINT_GUIDANCE = {
   a4: 'PDF A4: compatible con impresoras láser, de tinta o multifunción que admitan este papel. Selecciona A4 y tamaño real (100 %); si utilizas otro tamaño, ajusta en el visor y revisa el resultado.',
 } as const;
 
+export function PrintHelp({ format }: { format: 'ticket' | 'a4' }) {
+  return <details className="text-xs leading-relaxed text-muted-foreground">
+    <summary className="w-fit cursor-pointer rounded-sm focus-visible:outline focus-visible:outline-ring">Papel, impresora y ayuda del visor</summary>
+    <div className="mt-2 max-w-3xl space-y-2">
+      <p>{PRINT_GUIDANCE[format]} {PRINTER_COMPATIBILITY}</p>
+      <p>Si el visor aparece vacío, usa Abrir en visor y luego Imprimir en tu lector. La aplicación no confirma una impresión física ni controla directamente la impresora.</p>
+    </div>
+  </details>;
+}
+
+export function pdfViewerSource(url: string): string {
+  if (!url.startsWith('blob:') || url.includes('#')) throw new Error('El visor requiere un PDF protegido');
+  return `${url}#view=FitH`;
+}
+
 export async function assertPrintablePdf(blob: Blob) {
   if (blob.type.split(';')[0] !== 'application/pdf' || blob.size < 5 || blob.size > 10 * 1024 * 1024 ||
     await blob.slice(0, 5).text() !== '%PDF-') throw new Error('El archivo no es un PDF válido para imprimir');
 }
 
 /** Siempre recupera el PDF con la sesión. Nunca imprime la página ni publica el JWT. */
-export function PdfPrintButton({ path, format, label: customLabel, disabled = false }: { path: string; format: 'ticket' | 'a4'; label?: string; disabled?: boolean }) {
+export function PdfPrintButton({ path, format, label: customLabel, disabled = false, mode = 'LOCAL' }: { mode?: 'LOCAL' | 'FISCAL'; path: string; format: 'ticket' | 'a4'; label?: string; disabled?: boolean }) {
   const { apiBlob, user } = useWorkspace();
   const [open, setOpen] = useState(false);
   const [url, setUrl] = useState<string>();
@@ -57,17 +72,25 @@ export function PdfPrintButton({ path, format, label: customLabel, disabled = fa
   return <>
     <Button variant="outline" disabled={disabled} onClick={() => setOpen(true)}><Printer className="size-4" />{label}</Button>
     <Dialog open={open} onOpenChange={setOpen}>
-      <DialogContent className="sm:max-w-4xl">
-        <DialogHeader><DialogTitle>{label}</DialogTitle><DialogDescription>
-          Documento de desarrollo, sin validez tributaria. {PRINT_GUIDANCE[format]} {PRINTER_COMPATIBILITY} La aplicación no confirma una impresión física ni controla directamente la impresora.
-        </DialogDescription></DialogHeader>
-        {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
-        {!url && !error && <p role="status">Preparando PDF protegido…</p>}
-        {url && <><iframe ref={frame} title={`Vista previa · ${label}`} src={url} onLoad={() => setReady(true)} className="h-[55vh] w-full rounded-md border" /><p className="text-xs text-muted-foreground">¿Vista previa vacía? Este navegador puede no incluir visor PDF. Usa Imprimir o Abrir en visor; el archivo ya se recuperó con tu sesión.</p></>}
-        {notice && <p role="status" className="text-sm text-muted-foreground">{notice}</p>}
-        <DialogFooter>
-          {url && <Button variant="outline" asChild><a href={url} target="_blank" rel="noopener noreferrer"><ExternalLink className="size-4" />Abrir en visor</a></Button>}
-          <Button disabled={!url} onClick={print}><Printer className="size-4" />Imprimir</Button>
+      <DialogContent className="flex h-[90dvh] max-h-[calc(100dvh-1.5rem)] w-[calc(100%-2rem)] flex-col gap-0 overflow-hidden rounded-xl p-0 sm:h-[88dvh] sm:max-w-6xl">
+        <DialogHeader className="shrink-0 gap-2 border-b px-5 py-5 pr-12 text-left sm:px-6 sm:pr-14">
+          <DialogTitle className="flex items-center gap-3 text-base leading-snug sm:text-lg"><FileText className="size-5 shrink-0 text-muted-foreground" />{label}</DialogTitle>
+          <DialogDescription className="leading-relaxed">Vista previa {format === 'a4' ? 'A4' : '80 mm'} · {mode === 'FISCAL' ? 'Representación del comprobante. Consulte el estado fiscal en el PDF.' : 'Documento de desarrollo, sin validez tributaria.'}</DialogDescription>
+        </DialogHeader>
+        <div className="relative flex min-h-0 flex-1 flex-col bg-muted/40 p-3 sm:p-5">
+          {error && <div className="flex flex-1 items-center justify-center rounded-lg border bg-card p-6"><p role="alert" className="max-w-md text-center text-sm leading-relaxed text-destructive">{error}</p></div>}
+          {!url && !error && <div role="status" className="flex flex-1 items-center justify-center gap-3 rounded-lg border bg-card text-sm text-muted-foreground"><LoaderCircle className="size-5 animate-spin motion-reduce:animate-none" />Preparando PDF protegido…</div>}
+          {url && <iframe ref={frame} title={`Vista previa · ${label}`} src={pdfViewerSource(url)} onLoad={() => setReady(true)} className="min-h-0 w-full flex-1 rounded-lg border bg-white shadow-sm" />}
+        </div>
+        <DialogFooter className="max-h-[32dvh] shrink-0 flex-col gap-4 overflow-y-auto border-t bg-card px-5 py-4 sm:flex-col sm:items-stretch sm:px-6">
+          <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+            <PrintHelp format={format} />
+            <div className="grid shrink-0 grid-cols-2 gap-2 sm:flex">
+              {url && <Button variant="outline" asChild><a href={url} target="_blank" rel="noopener noreferrer"><ExternalLink className="size-4" />Abrir en visor</a></Button>}
+              <Button className={!url ? 'col-span-2' : undefined} disabled={!url} onClick={print}><Printer className="size-4" />Imprimir</Button>
+            </div>
+          </div>
+          {notice && <p role="status" className="text-xs leading-relaxed text-muted-foreground">{notice}</p>}
         </DialogFooter>
       </DialogContent>
     </Dialog>

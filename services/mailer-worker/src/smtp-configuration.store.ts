@@ -1,3 +1,4 @@
+import { mailerDatabaseName } from './mailer-database-identity';
 import { Injectable } from '@nestjs/common';
 import { AccessError } from '@factuez/service-access';
 import { PrismaService } from './prisma.service';
@@ -14,10 +15,11 @@ export class SmtpConfigurationStore {
 
   async ready(): Promise<boolean> {
     try {
+      const expectedDatabase = mailerDatabaseName();
       const [row] = await this.prisma.$queryRaw<Array<{ db: string; configuration: string | null; audit: string | null }>>`
         SELECT current_database() AS db, to_regclass('public."CorporateSmtpConfiguration"')::text AS configuration,
           to_regclass('public."CorporateSmtpConfigurationAudit"')::text AS audit`;
-      return row?.db === 'factuez_mailer_qa' && Boolean(row.configuration && row.audit);
+      return row?.db === expectedDatabase && Boolean(row.configuration && row.audit);
     } catch { return false; }
   }
 
@@ -29,6 +31,16 @@ export class SmtpConfigurationStore {
         FROM "CorporateSmtpConfiguration" WHERE "issuerRuc" = ${issuer.ruc} AND "companyId" = ${issuer.companyId}`;
       return rows[0] ?? null;
     } catch { throw new AccessError(503, 'No se pudo leer la configuración SMTP'); }
+  }
+  async audit(issuer: SmtpIssuer, page: number) {
+    if (!(await this.ready())) throw new AccessError(503, 'Almacenamiento SMTP no preparado');
+    try {
+      return await this.prisma.$transaction(async tx => {
+        const [count] = await tx.$queryRaw<Array<{ total: number }>>`SELECT COUNT(*)::integer AS total FROM "CorporateSmtpConfigurationAudit" WHERE "issuerRuc" = ${issuer.ruc} AND "companyId" = ${issuer.companyId}`;
+        const items = await tx.$queryRaw<Array<{ actorId: string; revision: number; credentialsReplaced: boolean; createdAt: Date }>>`SELECT "actorId", revision, "credentialsReplaced", "createdAt" FROM "CorporateSmtpConfigurationAudit" WHERE "issuerRuc" = ${issuer.ruc} AND "companyId" = ${issuer.companyId} ORDER BY revision DESC LIMIT 10 OFFSET ${(page - 1) * 10}`;
+        return { page, pageSize: 10, total: count.total, items };
+      }, { isolationLevel: 'RepeatableRead', timeout: 5000 });
+    } catch { throw new AccessError(503, 'No se pudo consultar la auditoría SMTP'); }
   }
 
   async save(issuer: SmtpIssuer, sealed: { cipher: string; keyVersion: number }, expectedRevision: number,

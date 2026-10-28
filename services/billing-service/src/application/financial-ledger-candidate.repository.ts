@@ -6,6 +6,7 @@ import { parseDecimal } from '@factuez/sunat-core/dist/tax';
 import type { Prisma, PrismaClient } from '../generated/prisma/client';
 import type { BetaSupplementActor } from './beta-supplement-command.repository';
 import { validateFinancialLedgerPlan, type FinancialLedgerPlanValidationResult } from './financial-ledger-plan';
+import {supplementActor} from './supplement-actor';
 
 type Tx = Prisma.TransactionClient;
 type Validation = FinancialLedgerPlanValidationResult;
@@ -52,8 +53,8 @@ export class FinancialLedgerCandidateRepository {
   async commit(value: unknown, actorInput: BetaSupplementActor): Promise<FinancialLedgerCandidateCommitResult> {
     let v: Validation, actor: BetaSupplementActor;
     try {
-      v = validateFinancialLedgerPlan(value); actor = boundedSupplementJson(actorInput) as BetaSupplementActor;
-      check(actor && UUID.test(actor.userId) && actor.scope && ['GLOBAL', 'ASSIGNED'].includes(actor.scope.kind), 'INVALID_ACTOR');
+      v = validateFinancialLedgerPlan(value); actor = supplementActor(actorInput);
+      check(actor && (actor.userId===null?actor.b2b?.kind==='SERVICE':UUID.test(actor.userId)) && actor.scope && ['GLOBAL', 'ASSIGNED'].includes(actor.scope.kind), 'INVALID_ACTOR');
       if (actor.scope.kind === 'ASSIGNED') check([actor.scope.branchIds, actor.scope.emissionPointIds, actor.scope.series]
         .every(ids => Array.isArray(ids) && ids.every(id => typeof id === 'string' && UUID.test(id))), 'INVALID_ACTOR');
       check(allowsResource(actor.scope, v.plan.input.scope.branchId), 'SCOPE_DENIED');
@@ -65,6 +66,13 @@ export class FinancialLedgerCandidateRepository {
         throw error instanceof CandidateBlocked ? error : new CandidateBlocked('STORAGE_FAILED');
       }
     }
+  }
+
+  /** Owner-local composition; caller supplies verified evidence and owns rollback. No nested transaction. */
+  async commitWithinTransaction(tx:Tx,value:unknown,actorInput:BetaSupplementActor):Promise<FinancialLedgerCandidateCommitResult>{
+    const v=validateFinancialLedgerPlan(value),actor=supplementActor(actorInput);
+    check(allowsResource(actor.scope,v.plan.input.scope.branchId),'SCOPE_DENIED');
+    return this.commitTx(tx,v,actor);
   }
 
   private async commitTx(tx: Tx, v: Validation, actor: BetaSupplementActor): Promise<FinancialLedgerCandidateCommitResult> {

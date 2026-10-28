@@ -1,4 +1,8 @@
 "use client";
+import { useState } from "react";
+import { Button } from "@factuez/ui/components/button";
+import { Checkbox } from "@factuez/ui/components/checkbox";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@factuez/ui/components/dialog";
 import {
   Card,
   CardContent,
@@ -7,7 +11,7 @@ import {
   CardTitle,
 } from "@factuez/ui/components/card";
 import { Badge } from "@factuez/ui/components/badge";
-import { useResource } from "../../../features/workspace/provider";
+import { useResource, useWorkspace } from "../../../features/workspace/provider";
 import {
   ErrorState,
   Loading,
@@ -34,18 +38,32 @@ const labels: Record<string, string> = {
 };
 export default function RolesPage() {
   const { data, error, reload } = useResource<Role[]>("/api/v1/roles");
+  const { api } = useWorkspace();
+  const [target, setTarget] = useState<Role>();
+  const [selected, setSelected] = useState<string[]>([]);
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState<string>();
+  const [notice, setNotice] = useState<string>();
+  async function save() {
+    if (!target || saving) return;
+    setSaving(true); setSaveError(undefined);
+    try {
+      await api(`/api/v1/roles/${target.code}`, { method: "PATCH", body: JSON.stringify({ permissions: selected, expectedPermissions: target.permissions }) });
+      setTarget(undefined); reload(); setNotice("Permisos guardados. Las cuentas afectadas deberán iniciar sesión nuevamente.");
+    } catch (error) { setSaveError(error instanceof Error ? error.message : "No se pudieron guardar los permisos"); }
+    finally { setSaving(false); }
+  }
   return (
     <>
       <PageHeading
         eyebrow="Seguridad"
         title="Roles y permisos"
-        description="Presets del sistema. Cada asignación conserva su alcance por sede, punto y serie."
+        description="Permisos actuales de cada rol. Las asignaciones conservan su alcance por sede, punto y serie."
       />
       <div className="mb-6 rounded-lg border bg-card p-4 text-sm leading-relaxed text-muted-foreground">
-        Esta matriz describe facultades de acceso, no asegura que todos los
-        módulos estén implementados. Los roles personalizados, turnos, correo y
-        reportes avanzados se habilitarán en etapas posteriores.
+        Consultar, emitir, administrar y exportar son permisos distintos. Cambiar un permiso no amplía las sedes asignadas ni habilita funciones fiscales bloqueadas. El administrador general está protegido.
       </div>
+      {notice && <p role="status" className="mb-4 text-sm text-emerald-700">{notice}</p>}
       {error ? (
         <ErrorState message={error} retry={reload} />
       ) : !data ? (
@@ -72,6 +90,7 @@ export default function RolesPage() {
                 </CardDescription>
               </CardHeader>
               <CardContent>
+                {role.editable && <Button size="sm" variant="outline" className="mb-4" onClick={() => { setTarget(role); setSelected([...role.permissions]); setSaveError(undefined); }}>Editar permisos</Button>}
                 <ul className="space-y-2 text-sm">
                   {role.permissions.map((permission) => (
                     <li key={permission} className="flex items-center gap-2">
@@ -85,6 +104,7 @@ export default function RolesPage() {
           ))}
         </div>
       )}
+      <Dialog open={Boolean(target)} onOpenChange={open => { if (!open && !saving) setTarget(undefined); }}><DialogContent className="max-h-[85dvh] overflow-y-auto"><DialogHeader><DialogTitle>Permisos de {target ? rolesText[target.code] ?? target.name : "rol"}</DialogTitle><DialogDescription>Estos cambios afectan a todas las cuentas con este rol. No cambian las sedes, puntos ni series autorizados. Algunas administraciones requieren además el rol de administrador general.</DialogDescription></DialogHeader><div className="grid gap-2">{Object.entries(labels).map(([code, label]) => <label key={code} className="flex items-center gap-3 rounded-md border p-3 text-sm"><Checkbox disabled={saving} checked={selected.includes(code)} onCheckedChange={value => setSelected(current => value === true ? [...current.filter(item => item !== code), code] : current.filter(item => item !== code))} />{label}</label>)}</div>{saveError && <ErrorState message={saveError} />}<DialogFooter><Button variant="outline" disabled={saving} onClick={() => setTarget(undefined)}>Cancelar</Button><Button disabled={saving} onClick={() => void save()}>Guardar permisos</Button></DialogFooter></DialogContent></Dialog>
     </>
   );
 }

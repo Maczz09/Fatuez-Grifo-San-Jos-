@@ -2,7 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { mkdir, open, realpath, rename, unlink } from "node:fs/promises";
 import { constants } from "node:fs";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
-import { Injectable } from "@nestjs/common";
+import { Inject, Injectable, Optional } from "@nestjs/common";
 
 export function assertDocumentId(documentId: string) {
   if (
@@ -24,10 +24,14 @@ function inside(root: string, path: string) {
 }
 export const MAX_ARTIFACT_BYTES = 10 * 1024 * 1024;
 
+export const SUNAT_ARTIFACTS_ROOT=Symbol('Explicit SUNAT artifact root');
 @Injectable()
 export class ArtifactStore {
+  constructor(@Optional() @Inject(SUNAT_ARTIFACTS_ROOT) private readonly explicitRoot?:string){
+    if(explicitRoot!==undefined&&(!isAbsolute(explicitRoot)||resolve(explicitRoot)===resolve(explicitRoot, '..')))throw Error('SUNAT_ARTIFACT_ROOT_REQUIRED');
+  }
   private root() {
-    return resolve(process.env.ARTIFACTS_ROOT ?? "/data/artifacts");
+    return this.explicitRoot===undefined ? resolve(process.env.ARTIFACTS_ROOT ?? "/data/artifacts") : resolve(this.explicitRoot);
   }
   putUnsignedXml(documentId: string, fileName: string, xml: string) {
     return this.put(documentId, `${fileName}.xml`, Buffer.from(xml, "utf8"));

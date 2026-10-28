@@ -14,6 +14,7 @@ import {Textarea} from '@factuez/ui/components/textarea';
 import {CATEGORY_LABELS,INITIAL_FILTERS,STATUS_LABELS,TYPE_LABELS,differenceLabels,displayDifference,exactMoney,exactUnitPrice,exportShadowReviews,filterShadowRows,panelRows,reportCsv,upsertShadowNote,
   type ShadowFilters,type ShadowNote,type ShadowPanelData,type ShadowPanelRow} from './model';
 import type {ShadowPrintProjection,ShadowReviewCategory,ShadowSide} from '@factuez/shadow-core';
+import {ListPagination} from '../workspace/list-pagination';
 type Editor={differenceId:string;category:ShadowReviewCategory;reason:string};
 const tone={MATCH_WITH_UNVERIFIED_EVIDENCE:'border-slate-200 bg-slate-50 text-slate-700 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200',
   DIFFERENCES_FOUND:'border-red-200 bg-red-50 text-red-800 dark:border-red-900 dark:bg-red-950/30 dark:text-red-200',
@@ -58,10 +59,10 @@ export function ShadowPanel({data,reviewerId,onDirtyChange,onRefresh,busy=false}
   }
   if(checked.error)return <div role="alert" className="rounded-lg border border-destructive p-6 text-sm"><p>{checked.error}</p>{onRefresh&&<Button className="mt-4" variant="outline" onClick={onRefresh}>Reintentar</Button>}</div>;
   return <div className="space-y-6" data-testid="shadow-panel">
-    <header className="flex flex-wrap items-start justify-between gap-4"><div><div className="mb-2 flex flex-wrap items-center gap-2"><Badge variant="outline">Fase 4</Badge><Badge variant="outline">BETA local</Badge><Badge variant="outline">Datos ficticios</Badge></div>
+    <header className="flex flex-wrap items-start justify-between gap-4"><div><div className="mb-2 flex flex-wrap items-center gap-2"><Badge variant="outline">BETA local</Badge><Badge variant="outline">Datos ficticios</Badge></div>
       <h1 className="text-2xl font-semibold tracking-tight sm:text-3xl">Modo sombra</h1><p className="mt-2 max-w-2xl text-sm text-muted-foreground">Revisa lo que coincide y lo que cambia, sin emitir comprobantes ni consumir correlativos.</p></div>
       <div className="flex flex-wrap gap-2"><Button variant="outline" onClick={()=>exportFile('json')}><Download/>Informe JSON</Button>{onRefresh&&<Button variant="outline" disabled={busy||dirty} onClick={onRefresh}>{busy?'Recalculando…':'Recalcular pruebas'}</Button>}</div></header>
-    <Notice><strong>Laboratorio aislado.</strong> Estos cuatro casos están integrados en el código. No pertenecen al emisor o sede de la cabecera. Sin conexión a SUNAT, firma real, aceptación CDR ni aprobación contable. Producción y corte bloqueados.</Notice>
+    <Notice><strong>Laboratorio aislado.</strong> Los casos de prueba no pertenecen al emisor o sede seleccionados. Esta comparación no envía documentos a SUNAT ni acredita aceptación fiscal o aprobación contable. Producción y corte bloqueados.</Notice>
     <section aria-label="Resumen del lote ficticio" className="grid grid-cols-2 gap-3 lg:grid-cols-4">{[
       ['Casos comparados',data.report.count,'Lote completo'],['Diferencias pendientes',data.report.differenceCount,'No se resuelven al anotarlas'],
       ['Coincidencias',data.report.matchingCount,'Sin verificar fiscalmente'],['Casos incompletos',checked.rows.filter(r=>r.report.status==='INCOMPLETE').length,'Requieren evidencia'],
@@ -80,7 +81,7 @@ export function ShadowPanel({data,reviewerId,onDirtyChange,onRefresh,busy=false}
           <TableCell className="font-mono tabular-nums">{exactMoney(a.amounts.payableAmount,a.currencyCode)}</TableCell><TableCell className="font-mono tabular-nums">{exactMoney(b.amounts.payableAmount,b.currencyCode)}</TableCell>
           <TableCell><ShadowStatus status={row.report.status}/></TableCell><TableCell className="font-mono tabular-nums">{row.report.differenceCount}</TableCell><TableCell><Button variant="outline" size="sm" aria-label={`Ver comparación ${fullNumber(row)}`} onClick={()=>{setSelected(row.report.caseId);setError('');}}><Eye/>Ver comparación</Button></TableCell></TableRow>;
       })}</TableBody></Table></div></>:<div className="flex min-h-44 flex-col items-center justify-center gap-2 text-center"><FileSearch className="size-7 text-muted-foreground"/><p className="font-medium">No hay casos con estos filtros</p><p className="text-sm text-muted-foreground">Limpia la búsqueda o elige otro estado.</p></div>}
-      {pages>1&&<div className="flex items-center justify-end gap-3"><Button variant="outline" disabled={activePage===1} onClick={()=>setPage(activePage-1)}>Anterior</Button><span className="text-xs">Página {activePage} de {pages}</span><Button variant="outline" disabled={activePage===pages} onClick={()=>setPage(activePage+1)}>Siguiente</Button></div>}
+      <ListPagination total={visible.length} page={activePage} onChange={setPage}/>
     </CardContent></Card>
     <Card><CardContent className="flex flex-wrap items-start justify-between gap-4 p-5"><div className="flex gap-3"><ShieldCheck className="mt-0.5 size-5 shrink-0 text-muted-foreground"/><div><p className="text-sm font-medium">Revisión local, no aprobación fiscal</p><p className="mt-1 max-w-2xl text-xs leading-relaxed text-muted-foreground">{notes.length} anotaciones en memoria. No se guardan en el servidor o navegador. Descárgalas antes de salir. Motivos sin registrar no se incluyen en la descarga.</p><p className="mt-2 break-all font-mono text-[10px] text-muted-foreground">Hash del lote: {data.report.inputSha256}</p></div></div><div className="flex flex-wrap gap-2"><Button variant="outline" disabled={!notes.length} onClick={()=>exportFile('review')}><Download/>Anotaciones JSON</Button><Button variant="ghost" disabled={!dirty} onClick={()=>setResetOpen(true)}><Trash2/>Descartar revisión</Button></div></CardContent></Card>
     <p role="status" aria-live="polite" className="text-xs text-muted-foreground">{feedback}</p>{error&&<p role="alert" className="rounded-lg border border-destructive p-3 text-sm text-destructive">{error}</p>}

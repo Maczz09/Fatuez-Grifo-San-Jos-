@@ -17,6 +17,7 @@ import { NotesTransportQaService } from './notes-transport-qa.service';
 import { notesTransport } from './notes-transport-qa.types';
 import { QA_SCENARIOS, type QaScenario } from '../infrastructure/sunat/bounded-soap.adapter';
 import { notesTransportHash } from './notes-transport-qa-package';
+import { CurrentPdfService } from './current-pdf.service';
 
 const sha = (value: unknown) => createHash('sha256').update(noteQaCanonical(value)).digest('hex');
 const QUEUE = 'notes-local-qa-signing-v1';
@@ -34,7 +35,8 @@ export class NotesQaService implements OnApplicationBootstrap, OnModuleDestroy {
     private readonly repository: NotesQaRepository, private readonly signer: NotesQaSigningService,
     private readonly store: ArtifactStore, private readonly vault: SecretVault, private readonly xsd: XsdValidationService,
     @Optional() @Inject(NOTES_QA_PDF_RENDERER) private readonly pdf?: NotesQaPdfRenderer,
-    @Optional() private readonly transport?: NotesTransportQaService) {}
+    @Optional() private readonly transport?: NotesTransportQaService,
+    @Optional() private readonly previews: CurrentPdfService = new CurrentPdfService()) {}
   private enabled() {
     if (process.env.NOTES_QA_ENABLED !== 'true' || process.env.LOCAL_XML_VALIDATION_ENABLED !== 'true' || process.env.FISCAL_CIRCUIT_QA_ENABLED !== 'true') throw new ServiceUnavailableException('Notas locales QA deshabilitadas');
     if (process.env.SUNAT_BETA_TRANSMISSION_ENABLED === 'true') throw new ConflictException('Las notas QA requieren transmisión Beta real deshabilitada');
@@ -163,7 +165,7 @@ export class NotesQaService implements OnApplicationBootstrap, OnModuleDestroy {
     } catch { throw new ServiceUnavailableException('Artefactos de nota ausentes o inconsistentes'); }
     if (format === 'ticket' || format === 'a4') {
       if (!this.pdf) throw new ServiceUnavailableException('Renderer PDF específico de notas no instalado');
-      bytes = await this.pdf.render(row.snapshot, format, { digestValue: row.digestValue, signatureVerified: true, localOnly: true, xsdValidated: this.view(row).xsdValidated });
+      bytes = await this.previews.document(row.snapshot, format, authorization, { digestValue: row.digestValue, status: 'SIGNED_LOCAL' }, context.printContext);
       if (bytes.length < 5 || bytes.length > 10 * 1024 * 1024 || bytes.subarray(0, 5).toString() !== '%PDF-') throw new ServiceUnavailableException('PDF de nota inválido');
     }
     return { bytes, mediaType: format === 'xml' ? 'application/xml' : format === 'zip' ? 'application/zip' : 'application/pdf',

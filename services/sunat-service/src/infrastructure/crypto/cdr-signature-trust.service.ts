@@ -10,11 +10,11 @@ import { CAC_NS, CBC_NS, child, leaf } from '../sunat/safe-xml';
 @Injectable()
 export class CdrSignatureTrustService {
   constructor(private readonly trust: CertificateTrustService) {}
-  async verify(xml: Buffer): Promise<boolean> {
+  private async signer(): Promise<string | null> {
     try {
       const pinned = await loadPinnedPublicFile(process.env.SUNAT_CDR_SIGNER_CERT_FILE, process.env.SUNAT_CDR_SIGNER_CERT_SHA256);
       const pems = pinned.text.match(/-----BEGIN CERTIFICATE-----[\s\S]*?-----END CERTIFICATE-----/g) ?? [];
-      if (!pems.length || pems.length > 16 || pinned.text.replace(/-----BEGIN CERTIFICATE-----[\s\S]*?-----END CERTIFICATE-----/g, '').trim()) return false;
+      if (!pems.length || pems.length > 16 || pinned.text.replace(/-----BEGIN CERTIFICATE-----[\s\S]*?-----END CERTIFICATE-----/g, '').trim()) return null;
       const leafPem = pems[0]!;
       const x509 = new X509Certificate(leafPem), certificate = forge.pki.certificateFromPem(leafPem);
       const metadata = { fingerprint: x509.fingerprint256.replaceAll(':', '').toLowerCase(), expiresAt: new Date(x509.validTo),
@@ -22,7 +22,14 @@ export class CdrSignatureTrustService {
         digitalSignature: (certificate.getExtension('keyUsage') as { digitalSignature?: boolean } | null)?.digitalSignature === true,
         subjectRucCandidates: certificateRucCandidates(certificate.subject.attributes) };
       const proof = await this.trust.evaluate(metadata, '20131312955');
-      if (!proof.chainValid || !proof.identityMatched || proof.revocation !== 'VERIFIED_OFFLINE_CRL') return false;
+      if (!proof.chainValid || !proof.identityMatched || proof.revocation !== 'VERIFIED_OFFLINE_CRL') return null;
+      return leafPem;
+    } catch { return null; }
+  }
+  async configured(): Promise<boolean> { return (await this.signer()) !== null; }
+  async verify(xml: Buffer): Promise<boolean> {
+    try {
+      const leafPem = await this.signer(); if (!leafPem) return false;
       const value = xml.toString('utf8'); if (!Buffer.from(value).equals(xml)) return false;
       const parsed = parseSafeInvoice(value, 'ApplicationResponse');
       if (leaf(child(child(parsed.root, CAC_NS, 'SenderParty'), CAC_NS, 'PartyIdentification'), CBC_NS, 'ID', 11) !== '20131312955') return false;

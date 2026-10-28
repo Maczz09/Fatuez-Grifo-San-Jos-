@@ -1,15 +1,23 @@
-import { Injectable, ServiceUnavailableException } from "@nestjs/common";
+import { Inject, Injectable, Optional, ServiceUnavailableException } from "@nestjs/common";
 import { createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
 import { readFileSync } from "node:fs";
+import { inspect } from "node:util";
 
 export type SecretContext = { ruc: string; environment: string; field: string };
 
 /** AES-GCM liga cada secreto al RUC, ambiente y campo; la clave nunca va a BD. */
+export const SUNAT_VAULT_KEY=Symbol('Explicit SUNAT vault key');
 @Injectable()
 export class SecretVault {
-  private key?: Buffer;
+  private destroyed=false;
+  constructor(@Optional() @Inject(SUNAT_VAULT_KEY) key?:Buffer){
+    if(key!==undefined){if(!Buffer.isBuffer(key)||key.length!==32)throw new ServiceUnavailableException('SUNAT_VAULT_KEY_REQUIRED');this.#key=Buffer.from(key);}
+  }
+  onModuleDestroy(){this.destroyed=true;this.#key?.fill(0);this.#key=undefined;}
+  #key?: Buffer;
   private masterKey() {
-    if (this.key) return this.key;
+    if(this.destroyed)throw new ServiceUnavailableException('SUNAT_VAULT_CLOSED');
+    if (this.#key) return this.#key;
     try {
       const path = process.env.APP_MASTER_KEY_FILE;
       if (!path) throw new Error();
@@ -19,7 +27,7 @@ export class SecretVault {
         : /^[A-Za-z0-9_+/=-]{43,44}$/.test(value)
           ? Buffer.from(value, "base64url") : Buffer.alloc(0);
       if (key.length !== 32) throw new Error();
-      return (this.key = key);
+      return (this.#key = key);
     } catch {
       throw new ServiceUnavailableException("La bóveda de secretos no está disponible");
     }
@@ -50,4 +58,6 @@ export class SecretVault {
       throw new ServiceUnavailableException("No se pudo verificar el secreto almacenado");
     }
   }
+  toJSON(){return {service:'SecretVault',contents:'PRIVATE',closed:this.destroyed};}
+  [inspect.custom](){return this.toJSON();}
 }

@@ -112,6 +112,7 @@ export function buildNoteQaSnapshot(original: FiscalDocumentSnapshot, inputValue
     series, number: identity.number, fullNumber: `${series}-${identity.number}`, issueDate: identity.issueDate,
     currencyCode: 'PEN', operationTypeCode: original.operationTypeCode,
     issuer: structuredClone(original.issuer), customer: structuredClone(original.customer),
+    ...(original.printPresentation ? { printPresentation: structuredClone(original.printPresentation) } : {}),
     reasonCode: input.reasonCode, reasonDescription: input.reasonDescription.trim(),
     reference: { documentId: original.documentId, documentTypeCode: original.documentTypeCode as '01' | '03', fullNumber: original.fullNumber, issueDate: original.issueDate },
     lines, totals: { taxableAmount: addMoney(lines.map(line => line.lineExtensionAmount)),

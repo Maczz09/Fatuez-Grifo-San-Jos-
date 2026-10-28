@@ -5,6 +5,7 @@ const nextConfig: NextConfig = {
   // conserva el empaquetado standalone sin cambiar la configuración del equipo.
   output: process.platform === "win32" ? undefined : "standalone",
   transpilePackages: ["@factuez/ui"],
+  serverExternalPackages: ["swagger-ui-dist"],
   images: { formats: ["image/avif", "image/webp"] },
 };
 

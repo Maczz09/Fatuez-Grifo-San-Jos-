@@ -33,6 +33,8 @@ const input = { expectedRevision: 0, settings, credentials };
 const authorization = 'Bearer QA.token';
 
 beforeEach(() => {
+  vi.stubEnv('MAILER_DATABASE_NAME', 'factuez_mailer_qa');
+  vi.stubEnv('DB_NAME', 'factuez_mailer_qa');
   vi.clearAllMocks();
   vi.stubEnv('SMTP_SETTINGS_KEY_FILE', resolve('smtp-qa-key-test-fixture'));
   vi.stubEnv('SMTP_SETTINGS_KEY_VERSION', '1'); vi.stubEnv('SMTP_APPROVED_HOSTS', 'smtp.corporativo.pe');
@@ -135,6 +137,21 @@ describe('política y adaptador corporativo preparado', () => {
 });
 
 describe('API SMTP autorizada por RUC, sólo local', () => {
+  it('retira servidor y claves con tombstone cifrado sin reiniciar revisión ni enviar correos', async () => {
+    const f = fixture(); await f.service.save('1', input, authorization);
+    const view = await f.service.remove('1', { expectedRevision: 1 }, authorization);
+    expect(view).toMatchObject({ revision: 2, configured: false, credentialsConfigured: false, settings: null, integrity: 'NOT_CONFIGURED', readyToSend: false });
+    const bytes = f.vault.open(f.rows.get(issuer.ruc)!.configurationCipher, context);
+    expect(JSON.parse(bytes.toString())).toEqual({ removed: true }); bytes.fill(0);
+    await expect(f.service.save('1', { expectedRevision: 2, settings }, authorization)).rejects.toMatchObject({ status: 400 });
+    await expect(f.service.remove('1', { expectedRevision: 1 }, authorization)).rejects.toMatchObject({ status: 409 });
+    expect(mocks.createTransport).not.toHaveBeenCalled();
+    await f.service.save('1', { ...input, expectedRevision: 2 }, authorization);
+    expect(await f.service.status('1', authorization)).toMatchObject({ configured: true, revision: 3 });
+  });
+  it.each([{}, { expectedRevision: -1 }, { expectedRevision: 1, send: true }, null])('no admite retiro inválido %j', async body => {
+    const f = fixture(); await expect(f.service.remove('1', body, authorization)).rejects.toMatchObject({ status: 400 }); expect(f.store.save).not.toHaveBeenCalled();
+  });
   it('cifra toda la configuración y devuelve sólo metadata sin credenciales/cipher/JWT', async () => {
     const f = fixture(); const view = await f.service.save('1', input, authorization);
     expect(view).toMatchObject({ ruc: issuer.ruc, revision: 1, configured: true, credentialsConfigured: true, hostnameApproved: true,

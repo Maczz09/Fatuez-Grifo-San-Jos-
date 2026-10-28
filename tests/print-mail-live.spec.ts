@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
-import { assertPrintablePdf, PRINT_GUIDANCE, PRINTER_COMPATIBILITY } from '../apps/web-pwa/features/workspace/pdf-print';
+import { assertPrintablePdf, PRINT_GUIDANCE, PRINTER_COMPATIBILITY, pdfViewerSource } from '../apps/web-pwa/features/workspace/pdf-print';
 import { localRecipient } from '../services/mailer-worker/src/local-mail';
 import { bearer, identity, authorizedDocument, LivePublisher } from '../packages/service-access/src';
 afterEach(() => { vi.unstubAllGlobals(); vi.unstubAllEnvs(); });
@@ -29,6 +29,18 @@ describe('impresión de PDF privado', () => {
     const source = readFileSync(new URL('../apps/web-pwa/features/workspace/pdf-print.tsx', import.meta.url),'utf8');
     expect(source).toContain('await apiBlob(path'); expect(source).toContain('URL.revokeObjectURL');
     expect(source).not.toContain('window.print('); expect(source).not.toContain('token=');
+  });
+  it('ajusta el visor al ancho sin exponer una URL remota ni tokens', () => {
+    expect(pdfViewerSource('blob:pdf-local')).toBe('blob:pdf-local#view=FitH');
+    expect(() => pdfViewerSource('https://example.invalid/a.pdf')).toThrow();
+    expect(() => pdfViewerSource('blob:pdf-local#token=x')).toThrow();
+  });
+  it('el diálogo usa altura dinámica y ayuda plegable, sin párrafo obligatorio largo', () => {
+    const source = readFileSync(new URL('../apps/web-pwa/features/workspace/pdf-print.tsx', import.meta.url), 'utf8');
+    expect(source).toContain('100dvh'); expect(source).toContain('min-h-0 flex-1');
+    expect(source).toContain('w-[calc(100%-2rem)]');
+    expect(source).toContain('<PrintHelp format={format}'); expect(source).toContain('<details');
+    expect(source).toContain('grid-cols-2'); expect(source).not.toContain('h-[55vh]');
   });
 });
 describe('correo exclusivamente ficticio', () => {

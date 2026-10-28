@@ -35,22 +35,26 @@ export class DocumentsController {
   ) {}
 
   @Get("catalog/issuance")
+  @Header("Cache-Control", "private, no-store")
   @RequiredPermissions(PermissionCodes.DOCUMENT_VIEW)
   async catalog(@Req() request: AuthenticatedRequest) {
     return this.issuanceQuery.catalog(request.user!.scope);
   }
 
   @Get("dashboard")
+  @Header("Cache-Control", "private, no-store")
   @RequiredPermissions(PermissionCodes.REPORT_VIEW)
   dashboard(
     @Req() request: AuthenticatedRequest,
     @Query("branchId") branchId?: string,
     @Query("companyId") companyId?: string,
+    @Query("dataSource") dataSource?: string,
   ) {
     return this.issuanceQuery.dashboard(
       request.user!.scope,
       branchId,
       companyId,
+      dataSource,
     );
   }
 
@@ -73,6 +77,7 @@ export class DocumentsController {
   }
 
   @Get()
+  @Header("Cache-Control", "private, no-store")
   @RequiredPermissions(PermissionCodes.DOCUMENT_VIEW)
   async recent(
     @Req() request: AuthenticatedRequest,
@@ -80,6 +85,7 @@ export class DocumentsController {
     @Query("companyId") companyId?: string,
     @Query("page") page?: string,
     @Query("q") query?: string,
+    @Query("dataSource") dataSource?: string,
   ) {
     return this.issuanceQuery.recentDocuments(
       request.user!.scope,
@@ -87,6 +93,7 @@ export class DocumentsController {
       Number(page ?? 1),
       query ?? "",
       companyId,
+      dataSource,
     );
   }
 
@@ -107,6 +114,7 @@ export class DocumentsController {
     const result = await this.issueDocument.execute(body, {
       idempotencyKey: `${user.sub}:${idempotencyKey}`,
       scope: user.scope,
+      authorization: typeof request.headers.authorization === 'string' ? request.headers.authorization : undefined,
       userId: user.sub,
       correlationId: correlationId ?? randomUUID(),
     });

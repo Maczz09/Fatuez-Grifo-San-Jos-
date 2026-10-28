@@ -22,7 +22,7 @@ export class IssuanceQueryService {
     if (branchId && !allowsResource(scope, branchId))
       throw new ForbiddenException("Sede no autorizada");
     return {
-      ...(activeOnly ? { active: true, branch: { active: true } } : {}),
+      ...(activeOnly ? { active: true, branch: { active: true }, company: { active: true, environment: process.env.BILLING_PRODUCTION_ISSUANCE_ENABLED === 'true' ? { in: ['BETA', 'PRODUCTION'] } : 'BETA' } } : {}),
       ...(scope.kind === "ASSIGNED"
         ? {
             id: { in: scope.emissionPointIds },
@@ -34,18 +34,19 @@ export class IssuanceQueryService {
   }
 
   async catalog(scope: AccessScope) {
+    const environment = process.env.BILLING_PRODUCTION_ISSUANCE_ENABLED === 'true'
+      ? { in: ['BETA', 'PRODUCTION'] as ('BETA' | 'PRODUCTION')[] } : 'BETA' as const;
     const [companies, branches, points, products] = await Promise.all([
       this.prisma.companySettings.findMany({
         where:
-          scope.kind === "GLOBAL"
-            ? {}
-            : { branches: { some: { id: { in: scope.branchIds } } } },
+          { active: true, environment, ...(scope.kind === "GLOBAL" ? {} : { branches: { some: { id: { in: scope.branchIds } } } }) },
         select: { id: true, ruc: true, legalName: true, environment: true },
         orderBy: { legalName: "asc" },
       }),
       this.prisma.branch.findMany({
         where: {
           active: true,
+          company: { active: true, environment },
           ...(scope.kind === "ASSIGNED" ? { id: { in: scope.branchIds } } : {}),
         },
         orderBy: { code: "asc" },
@@ -69,19 +70,39 @@ export class IssuanceQueryService {
         orderBy: { description: "asc" },
       }),
     ]);
+    // Misma identidad de laboratorio que GRE QA; el nombre no clasifica datos.
+    const companySources = new Map(
+      companies.map((company) => [
+        company.id,
+        /^00\d{9}$/.test(company.ruc) ? "SYNTHETIC" as const : "BUSINESS" as const,
+      ]),
+    );
     return {
-      companies,
+      companies: companies.map((company) => ({
+        ...company,
+        source: companySources.get(company.id)!,
+      })),
+      catalogPolicy: {
+        sourceRule: "RUC00",
+        defaultSource: "BUSINESS",
+        historyIncludesAllSources: true,
+      },
       capabilities: {
         fiscalTransmission: false,
+        productionInvoiceAdmission: process.env.BILLING_PRODUCTION_ISSUANCE_ENABLED === 'true',
         demoData: process.env.FACTUEZ_DEMO_SEED === "true",
       },
-      branches,
+      branches: branches.map((branch) => ({
+        ...branch,
+        source: companySources.get(branch.companyId),
+      })),
       emissionPoints: points.map((point) => ({
         id: point.id,
         code: point.code,
         name: point.name,
         branchId: point.branchId,
         companyId: point.companyId,
+        source: companySources.get(point.companyId),
         trackNumber: point.trackNumber,
         series: point.counters.map((counter) => ({
           id: counter.id,
@@ -104,7 +125,10 @@ export class IssuanceQueryService {
     scope: AccessScope,
     branchId?: string,
     companyId?: string,
+    dataSource?: string,
   ): Promise<Prisma.DocumentWhereInput> {
+    if (dataSource !== undefined && !['BUSINESS', 'SYNTHETIC', 'ALL'].includes(dataSource))
+      throw new BadRequestException('Fuente de datos inválida');
     if (
       companyId &&
       (!/^[1-9]\d{0,9}$/.test(companyId) ||
@@ -124,6 +148,8 @@ export class IssuanceQueryService {
     }
     return {
       ...(companyId ? { companyId: Number(companyId) } : {}),
+      ...(dataSource === 'BUSINESS' ? { company: { ruc: { not: { startsWith: '00' } } } }
+        : dataSource === 'SYNTHETIC' ? { company: { ruc: { startsWith: '00' } } } : {}),
       emissionPoint: this.pointWhere(scope, branchId, false),
       ...(scope.kind === "ASSIGNED"
         ? { seriesCounterId: { in: scope.series } }
@@ -137,6 +163,7 @@ export class IssuanceQueryService {
     page = 1,
     query = "",
     companyId?: string,
+    dataSource?: string,
   ) {
     if (
       !Number.isInteger(page) ||
@@ -146,7 +173,7 @@ export class IssuanceQueryService {
     )
       throw new BadRequestException("Paginación o búsqueda inválida");
     const where: Prisma.DocumentWhereInput = {
-      ...(await this.where(scope, branchId, companyId)),
+      ...(await this.where(scope, branchId, companyId, dataSource)),
       ...(query
         ? {
             OR: [
@@ -172,6 +199,7 @@ export class IssuanceQueryService {
     return {
       page,
       pageSize: 20,
+      ...(dataSource !== undefined ? { dataSource } : {}),
       total,
       items: documents.map((document) => ({
         id: document.id,
@@ -195,7 +223,7 @@ export class IssuanceQueryService {
     };
   }
 
-  async dashboard(scope: AccessScope, branchId?: string, companyId?: string) {
+  async dashboard(scope: AccessScope, branchId?: string, companyId?: string, dataSource?: string) {
     const localDate = new Intl.DateTimeFormat("en-CA", {
       timeZone: "America/Lima",
       year: "numeric",
@@ -205,7 +233,7 @@ export class IssuanceQueryService {
     const start = new Date(localDate + "T00:00:00-05:00");
     const end = new Date(start.getTime() + 86400000);
     const where: Prisma.DocumentWhereInput = {
-      ...(await this.where(scope, branchId, companyId)),
+      ...(await this.where(scope, branchId, companyId, dataSource)),
       issueDate: { gte: start, lt: end },
       currencyCode: "PEN",
     };
@@ -243,6 +271,7 @@ export class IssuanceQueryService {
       ]);
     return {
       date: localDate,
+      ...(dataSource !== undefined ? { dataSource } : {}),
       currencyCode: "PEN",
       updatedAt: new Date().toISOString(),
       count: totals._count._all,
@@ -281,10 +310,22 @@ export class IssuanceQueryService {
         sunatStatus: true,
         sunatResponseDescription: true,
         immutableSnapshot: true,
+        emissionPoint: { select: { branchId: true } },
       },
     });
     if (!document)
       throw new NotFoundException("Documento no disponible en su alcance");
-    return { ...document, fiscalTransmission: false };
+    const { emissionPoint, ...detail } = document;
+    return {
+      ...detail,
+      printContext: {
+        companyId: document.companyId,
+        branchId:
+          emissionPoint?.branchId ??
+          (document.immutableSnapshot as { branchId?: string } | null)?.branchId ??
+          null,
+      },
+      fiscalTransmission: false,
+    };
   }
 }

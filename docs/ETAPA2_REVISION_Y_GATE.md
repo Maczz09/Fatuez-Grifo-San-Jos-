@@ -4,6 +4,12 @@ Revisión y reparación local: 02/10/2026. Instalación: `factuez-stage2-qa`, `h
 
 ## Decisión
 
+Actualización del 07/10/2026: [implementación técnica y entrega](ETAPA2_3_CIERRE_TECNICO_Y_ENTREGA.md).
+El cliente se encarga de copia/export, mapa y aprobaciones. La recepción de
+originales adicionales no es condición para desarrollar/pruebas locales.
+Se amplió el diagnóstico XML/CDR a 01/03/07/08 y la preconciliación aislada;
+la activación y aceptación fiscal siguen separadas de esta entrega técnica.
+
 Desarrollo posterior: [primer incremento de etapa 4](ETAPA4_MODO_SOMBRA_LOCAL.md).
 Comparación y clasificación offline con fixtures ficticios, sin emisión,
 correlativos, datos reales o despliegue. No cierra la etapa 2 fiscal ni acredita
@@ -172,9 +178,12 @@ Estos puntos no se resuelven sólo cargando datos o credenciales del cliente:
   SOAP/ticket/CDR/proyección implementados con puertos, pero el wiring real
   conserva el gate de activación cerrado. Falta piloto integrado aprobado y
   evidencia de confianza para CDR reales; no basta encender un flag.
-- Notas 07/08: firma/XSD/PDF y transporte/CDR propios del emulador ya
-  implementados. Transporte oficial y motivos adicionales pendientes.
-  RC/RA: emulador local, sin RC modificación ni cierre fiscal.
+- Notas F 07/08 y RC/RA: preparación, validador Beta y transporte
+  `BoundedSoapAdapter`/`BetaSupplementService`/`BetaDispatchPipeline` implementados,
+  además del emulador. Existe preparación de RC múltiple alta/modificación/baja
+  y RA múltiple; pruebas locales reforzadas el 07/10. La descripción anterior
+  que los reducía al emulador quedó desactualizada. Falta ensayo oficial integrado
+  y activación controlada; motivos/perfiles no cubiertos siguen bloqueados.
 - Reglas: perfil parcial oneroso IGV 18%, no automatización completa del conjunto
   publicado. Contado/crédito/cuotas de 01 están implementados; crédito 03,
   corrección de cuotas en notas, anticipos, descuentos, detracciones/ISC y otros

@@ -1,3 +1,4 @@
+import {ProductionNotesArtifactsService} from './production-notes-artifacts.service';
 import {
   Injectable,
   BadRequestException,
@@ -6,18 +7,23 @@ import {
   ServiceUnavailableException,
   UnauthorizedException,
   ForbiddenException,
+  Optional,
 } from "@nestjs/common";
 import type { FiscalDocumentSnapshot } from "@factuez/contracts";
-import { renderLocalDocumentPdf, type PrintFormat } from "@factuez/pdf-renderer";
 import { isDeepStrictEqual } from "node:util";
 import { ArtifactStore } from "../infrastructure/artifact-store";
 import { PrismaService } from "../infrastructure/prisma.service";
+import { CurrentPdfService, type PrintOwner } from './current-pdf.service';
+import { ProductionPdfService } from './production-pdf.service';
 
 @Injectable()
 export class ArtifactDeliveryService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly store: ArtifactStore,
+    @Optional() private readonly previews: CurrentPdfService = new CurrentPdfService(),
+    @Optional() private readonly production?: ProductionPdfService,
+    @Optional() private readonly notes?: ProductionNotesArtifactsService,
   ) {}
   async download(documentId: string, format: string, authorization?: string) {
     if (
@@ -63,7 +69,7 @@ export class ArtifactDeliveryService {
       throw new ServiceUnavailableException(
         "No se pudo verificar el acceso al documento",
       );
-    let permitted: { id: string; immutableSnapshot: FiscalDocumentSnapshot };
+    let permitted: { id: string; companyId?: number; printContext?: PrintOwner; immutableSnapshot: FiscalDocumentSnapshot };
     try {
       permitted = (await response.json()) as typeof permitted;
     } catch {
@@ -78,6 +84,17 @@ export class ArtifactDeliveryService {
       throw new ServiceUnavailableException(
         "Respuesta de autorización inconsistente",
       );
+    const snapshot = permitted.immutableSnapshot;
+    if (snapshot.environment === 'PRODUCTION' && ['07','08'].includes(snapshot.documentTypeCode)) {
+      if (!this.notes) throw new ServiceUnavailableException('Representación de notas aún no ensamblada.');
+      return this.notes.pdf(documentId, format as 'ticket' | 'a4', authorization);
+    }
+    if (snapshot.environment === 'PRODUCTION') {
+      if (!this.production) throw new ServiceUnavailableException('Representación fiscal productiva aún no ensamblada.');
+      const bytes = await this.production.document(snapshot, format as 'ticket' | 'a4', authorization,
+        permitted.printContext ?? { companyId: permitted.companyId });
+      return { bytes, fileName: `${snapshot.issuer.identityNumber}-${snapshot.documentTypeCode}-${snapshot.fullNumber}-${format}-PRODUCCION.pdf` };
+    }
     const document = await this.prisma.fiscalDocument.findUnique({
       where: { documentId },
     });
@@ -85,7 +102,8 @@ export class ArtifactDeliveryService {
       throw new ConflictException(
         "PDF en preparación. Reintente en unos segundos",
       );
-    const snapshot = permitted.immutableSnapshot;
+    if (snapshot.environment !== 'BETA' || !/^[1-9]\d{0,17}$/.test(snapshot.number ?? ''))
+      throw new ConflictException('La visualización temporal está limitada a documentos de desarrollo Beta con identidad válida');
     if (
       document.issuerRuc !== snapshot.issuer.identityNumber ||
       document.environment !== snapshot.environment ||
@@ -101,25 +119,11 @@ export class ArtifactDeliveryService {
       throw new ConflictException(
         "El documento requiere representación fiscal; no se entrega el PDF local de prueba",
       );
-    const kind = format === "ticket" ? "PDF_TICKET_80MM" : "PDF_A4";
-    const artifact = await this.prisma.documentArtifact.findUnique({
-      where: { documentId_kind: { documentId, kind } },
-    });
-    if (!artifact)
-      throw new ConflictException(
-        "PDF en preparación. Reintente en unos segundos",
-      );
-    let bytes: Buffer;
-    try {
-      await this.store.read(documentId, artifact);
-      // Sólo representación local: actualizar marcas sin tocar originales,
-      // snapshot, correlativo, XML ni colas. Nunca para documentos fiscales.
-      bytes = await renderLocalDocumentPdf(snapshot, format as PrintFormat);
-    } catch {
-      throw new ServiceUnavailableException(
-        "No se pudo verificar el archivo. Solicite revisión al administrador",
-      );
-    }
+    // La representación de consulta ya no depende del PDF archivado al emitir.
+    // La caché se consulta DESPUÉS de autorizar y contrastar el snapshot. XML,
+    // CDR y PDFs históricos existentes no se sobrescriben ni se eliminan.
+    const bytes = await this.previews.document(snapshot, format as 'ticket' | 'a4', authorization, undefined,
+      permitted.printContext ?? { companyId: permitted.companyId });
     return {
       bytes,
       fileName: `${document.issuerRuc}-${document.documentType}-${document.series}-${document.number}-${format}-PRUEBA.pdf`,

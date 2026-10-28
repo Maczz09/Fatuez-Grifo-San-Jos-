@@ -1,4 +1,5 @@
-import { Injectable, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
+import { Inject, Injectable, OnModuleDestroy, OnModuleInit, Optional } from '@nestjs/common';
+import {b2bPostgresOptions,type B2bPostgresOptions} from '@factuez/service-access/dist/b2b-postgres-options';
 import { PrismaPg } from '@prisma/adapter-pg';
 import { readFileSync } from 'node:fs';
 import { PrismaClient } from '../generated/prisma/client';
@@ -17,8 +18,8 @@ function connectionString() {
 
 @Injectable()
 export class PrismaService extends PrismaClient implements OnModuleInit, OnModuleDestroy {
-  constructor() {
-    super({ adapter: new PrismaPg({ connectionString: connectionString(), connectionTimeoutMillis: 5_000 }) });
+  constructor(@Optional() @Inject('B2B_DATABASE_OPTIONS') options?:B2bPostgresOptions) {
+    super({ adapter: new PrismaPg(options===undefined?{ connectionString: connectionString(), connectionTimeoutMillis: 5_000 }:b2bPostgresOptions(options)) });
   }
 
   async onModuleInit() {

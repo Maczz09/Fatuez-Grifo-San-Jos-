@@ -1,5 +1,8 @@
 "use client";
 import Link from "next/link";
+import { FiscalDocumentMail } from '../../../../features/workspace/corporate-document-mail';
+import { ProductionNotesPanel } from '../../../../features/workspace/production-notes';
+import { FiscalOriginals } from '../../../../features/workspace/fiscal-originals';
 import { CircuitQa } from '../../../../features/workspace/circuit-qa';
 import { PdfPrintButton } from '../../../../features/workspace/pdf-print';
 import { SupplementTracking } from '../../../../features/workspace/supplement-tracking';
@@ -43,12 +46,17 @@ import {
 type Detail = {
   id: string;
   fullNumber: string;
+  companyId: number;
   sunatStatus: string;
   sunatResponseDescription?: string;
   immutableSnapshot: {
     issuer: { identityNumber: string; legalName: string; address?: string };
     customer: { identityNumber: string; legalName: string };
     environment: string;
+    documentTypeCode?: string;
+    reference?: {documentId:string;fullNumber:string};
+    reasonCode?: string;
+    reasonDescription?: string;
     currencyCode: string;
     issueDate: string;
     lines: {
@@ -72,6 +80,7 @@ export default function DocumentDetailPage() {
   const [validation, setValidation] = useState<LocalValidation>();
   const abort = useRef<AbortController | undefined>(undefined);
   const doc = resource.data;
+  const production = doc?.immutableSnapshot.environment === "PRODUCTION";
   const canValidate = user?.roles.includes("ADMIN") && user.scope.kind === "GLOBAL" && can("sunat.configure") &&
     doc?.immutableSnapshot.environment === "BETA" && /^00\d{9}$/.test(doc.immutableSnapshot.issuer.identityNumber);
   useEffect(() => {
@@ -112,7 +121,7 @@ export default function DocumentDetailPage() {
       const url = URL.createObjectURL(blob);
       const link = document.createElement("a");
       link.href = url;
-      link.download = `${doc.immutableSnapshot.issuer.identityNumber}-${doc.fullNumber}-${format}-PRUEBA.pdf`;
+      link.download = `${doc.immutableSnapshot.issuer.identityNumber}-${doc.fullNumber}-${format}-${production ? "PRODUCCION" : "PRUEBA"}.pdf`;
       document.body.appendChild(link);
       link.click();
       link.remove();
@@ -148,6 +157,7 @@ export default function DocumentDetailPage() {
         <Loading />
       ) : (
         <>
+          {production && doc.immutableSnapshot.reference && <Card className="mb-6 shadow-none"><CardHeader><CardTitle>{doc.immutableSnapshot.documentTypeCode === '07' ? 'Nota de crédito' : 'Nota de débito'}</CardTitle><CardDescription>Referencia: <Link className="underline" href={`/documents/${doc.immutableSnapshot.reference.documentId}`}>{doc.immutableSnapshot.reference.fullNumber}</Link></CardDescription></CardHeader><CardContent><p className="text-sm">{doc.immutableSnapshot.reasonCode} · {doc.immutableSnapshot.reasonDescription}</p></CardContent></Card>}
           <div className="mb-6 grid gap-5 lg:grid-cols-[1fr_340px]">
             <Card className="shadow-none">
               <CardHeader>
@@ -184,9 +194,9 @@ export default function DocumentDetailPage() {
             </Card>
             <Card className="shadow-none">
               <CardHeader>
-                <CardTitle>Representaciones de prueba</CardTitle>
+                <CardTitle>{production ? "Representación del comprobante" : "Representaciones de prueba"}</CardTitle>
                 <CardDescription>
-                  PDF local, sin validez tributaria.
+                  {production ? "PDF generado desde el XML firmado; el estado fiscal figura en el documento." : "PDF local, sin validez tributaria."}
                 </CardDescription>
               </CardHeader>
               <CardContent className="space-y-3">
@@ -211,17 +221,15 @@ export default function DocumentDetailPage() {
                 </Button>
                 {error && <ErrorState message={error} />}
                 <div className="flex flex-col gap-2">
-                  <PdfPrintButton path={`/api/v1/fiscal-artifacts/${id}/ticket`} format="ticket" label="Imprimir ticket local sin firma" disabled={!!busy} />
-                  <PdfPrintButton path={`/api/v1/fiscal-artifacts/${id}/a4`} format="a4" label="Imprimir A4 local sin firma" disabled={!!busy} />
+                  <PdfPrintButton path={`/api/v1/fiscal-artifacts/${id}/ticket`} format="ticket" mode={production ? "FISCAL" : "LOCAL"} label={production ? "Imprimir ticket 80 mm" : "Imprimir ticket local sin firma"} disabled={!!busy} />
+                  <PdfPrintButton path={`/api/v1/fiscal-artifacts/${id}/a4`} format="a4" mode={production ? "FISCAL" : "LOCAL"} label={production ? "Imprimir A4" : "Imprimir A4 local sin firma"} disabled={!!busy} />
                 </div>
                 <p className="text-xs leading-relaxed text-muted-foreground">
                   Cualquier marca con controlador instalado: térmica de 80 mm
                   o impresora de oficina con papel A4. Seleccione su equipo
                   USB, de red o compartido en el diálogo de impresión.
-                  Si está en preparación, reintente en unos segundos. Abra el
-                  PDF e imprima a tamaño real, sin ajustar a página. Firma,
-                  QR, CDR y validación fiscal aún pendientes. La firma de
-                  laboratorio, si se ejecuta, no cambia estos PDF de prueba.
+                  {production ? " Imprima a tamaño real y compruebe que el QR sea legible." : " Si está en preparación, reintente en unos segundos. Firma, QR, CDR y validación fiscal pendientes en estos PDF locales de prueba."}
+
                 </p>
                 <Button variant="ghost" size="sm" onClick={resource.reload}>
                   <RefreshCw className="size-4" /> Consultar estado
@@ -229,6 +237,9 @@ export default function DocumentDetailPage() {
               </CardContent>
             </Card>
           </div>
+          {production && <FiscalOriginals documentId={id} fileNumber={`${doc.immutableSnapshot.issuer.identityNumber}-${doc.immutableSnapshot.documentTypeCode ?? "01"}-${doc.fullNumber}`} />}
+          {production && can('document.email') && user?.scope.kind === 'GLOBAL' && user.roles.includes('ADMIN') && ['01','03','07','08'].includes(doc.immutableSnapshot.documentTypeCode ?? '') && ['ACCEPTED','ACCEPTED_WITH_OBSERVATIONS'].includes(doc.sunatStatus) && <FiscalDocumentMail key={`mail:${id}`} documentId={id} companyId={doc.companyId} ruc={doc.immutableSnapshot.issuer.identityNumber}/> }
+          {production && ['01','03'].includes(doc.immutableSnapshot.documentTypeCode??'') && ['ACCEPTED','ACCEPTED_WITH_OBSERVATIONS'].includes(doc.sunatStatus) && <ProductionNotesPanel documentId={id}/> }
           {canValidate && <Card className="mb-6 shadow-none">
             <CardHeader>
               <CardTitle className="flex items-center gap-2"><ShieldCheck className="size-5" /> Laboratorio XML · Sólo prueba local</CardTitle>
