@@ -33,3 +33,12 @@ services/*/src/generated/
 # Evidencia fiscal, respuestas de pilotos, copias y documentos del cliente.
 tmp/
 output/
+
+# Configuración local de asistentes; no pertenece a la entrega
+.agents/
+.codex/
+.kilo/
+skills-lock.json
+.ci-python/
+__pycache__/
+*.pyc

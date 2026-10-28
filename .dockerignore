@@ -24,3 +24,15 @@ tmp
 .env.*
 **/.env
 **/.env.*
+
+# Herramientas de asistentes: fuera de imágenes y despliegues
+.agents
+.codex
+.kilo
+skills-lock.json
+**/AGENTS.md
+**/CODEX.md
+**/*HANDOFF.md
+**/__pycache__
+**/*.pyc
+.ci-python
