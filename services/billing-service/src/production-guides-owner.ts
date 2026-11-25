@@ -1,9 +1,10 @@
+import { PRODUCTION_GUIDES_PROFILES } from '@factuez/contracts/production-guides';
 import { BadRequestException, ConflictException, ForbiddenException, NotFoundException, ServiceUnavailableException } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
 import { allowsResource, type AccessScope } from '@factuez/contracts';
 import type { ProductionGuidesIssued as Issued, ProductionGuidesGrant as Grant, ProductionGuidesSnapshot as Snapshot, ProductionGuidesSigner, ProductionGuidesVerifier, ProductionGuidesReadPort, ProductionGuidesStatusEvent, ProductionGuidesArtifactKind } from '@factuez/contracts/production-guides';
 const PRODUCTION_GUIDES_ISSUED = 'billing.production-guides.issued.v1' as const;
-import { productionGuidesHash as hash, productionGuidesExact as exact, productionGuidesUuid as uuid, validateProductionGuidesSnapshot, PRODUCTION_GUIDES_XSD_SHA256 } from '@factuez/sunat-core/dist/production-guides';
+import { productionGuidesHash as hash, productionGuidesExact as exact, productionGuidesUuid as uuid, validateProductionGuidesSnapshot, validateProductionGuidesResult, PRODUCTION_GUIDES_XSD_SHA256 } from '@factuez/sunat-core/dist/production-guides';
 export interface ProductionGuidesRaw { $queryRawUnsafe<T=unknown>(sql:string,...args:any[]):Promise<T>; $executeRawUnsafe(sql:string,...args:any[]):Promise<number> }
 export interface ProductionGuidesBillingDb extends ProductionGuidesRaw { $transaction<T>(work:(tx:ProductionGuidesRaw)=>Promise<T>,options?:any):Promise<T> }
 export type ProductionGuidesActor={userId:string;scope:AccessScope};
@@ -48,7 +49,7 @@ export class ProductionGuidesOwner {
  /** Append-only CAS. Exposed only through SUNAT_CONFIGURE + native scope guard. No default grant. */
  async configure(seriesId:string,raw:unknown,actor:ProductionGuidesActor){
   const options=this.enabled();exact(raw,['expectedVersion','actorId','enabled','profiles','expectedCredentialRevision','expiresAt']);const value=structuredClone(raw) as any;
-  uuid(value.actorId);if(!Number.isSafeInteger(value.expectedVersion)||value.expectedVersion<0||typeof value.enabled!=='boolean'||!Array.isArray(value.profiles)||!value.profiles.length||new Set(value.profiles).size!==value.profiles.length||value.profiles.some((p:string)=>!['GRE09_PRIVATE04_V1','GRE09_PUBLIC01_V1','GRE31_PUBLIC_SINGLE09_V1'].includes(p))||!Number.isSafeInteger(value.expectedCredentialRevision)||value.expectedCredentialRevision<1||!Number.isFinite(Date.parse(value.expiresAt))||Date.parse(value.expiresAt)<=Date.parse(this.clock()))throw new BadRequestException('Concesión inválida');
+  uuid(value.actorId);if(!Number.isSafeInteger(value.expectedVersion)||value.expectedVersion<0||typeof value.enabled!=='boolean'||!Array.isArray(value.profiles)||!value.profiles.length||new Set(value.profiles).size!==value.profiles.length||value.profiles.some((p:string)=>!(PRODUCTION_GUIDES_PROFILES as readonly string[]).includes(p))||!Number.isSafeInteger(value.expectedCredentialRevision)||value.expectedCredentialRevision<1||!Number.isFinite(Date.parse(value.expiresAt))||Date.parse(value.expiresAt)<=Date.parse(this.clock()))throw new BadRequestException('Concesión inválida');
   return this.db.$transaction(async tx=>{
    await tx.$executeRawUnsafe('SELECT pg_advisory_xact_lock(hashtextextended($1,0))','production-guides-grant:'+seriesId+':'+value.actorId);
    const n=await this.native(tx,seriesId,actor,true), prior=await this.grant(tx,seriesId,value.actorId);
@@ -74,7 +75,7 @@ export class ProductionGuidesOwner {
    const g=this.checkGrant(await this.grant(tx,n.seriesCounterId,actor.userId),n,actor.userId,input.profile);
    if(BigInt(n.nextNumber)<1n||BigInt(n.nextNumber)>99999999n)throw new ConflictException('Correlativo agotado');
    const snapshot=validateProductionGuidesSnapshot({schemaVersion:'factuez.production-guides.v1',documentId:randomUUID(),operationId,actorId:actor.userId,
-    scope:this.scope(n),issuer:{ruc:n.issuerRuc,legalName:n.legalName},documentType:input.profile==='GRE31_PUBLIC_SINGLE09_V1'?'31':'09',profile:input.profile,series:n.series,number:String(n.nextNumber),body:input.body,grantVersion:g.version,createdAt:this.clock(),environment:'PRODUCTION'});
+    scope:this.scope(n),issuer:{ruc:n.issuerRuc,legalName:n.legalName},documentType:['GRE31_PUBLIC_SINGLE09_V1','GRE31_FUEL_PUBLIC_SINGLE09_V1'].includes(input.profile)?'31':'09',profile:input.profile,series:n.series,number:String(n.nextNumber),body:input.body,grantVersion:g.version,createdAt:this.clock(),environment:'PRODUCTION'});
    // Pre-number-commit gate: no signing here; SUNAT checks immutable data, production reference, config/trust/rules availability.
    await options.sunat.admit(snapshot,g);
    const payload={eventId:randomUUID(),eventType:PRODUCTION_GUIDES_ISSUED,snapshot,snapshotSha256:hash(snapshot)};
@@ -117,7 +118,7 @@ export class ProductionGuidesOwner {
   const row=(await this.db.$queryRawUnsafe<any[]>('SELECT "event" FROM "ProductionGuidesReservation" WHERE "documentId"=$1::uuid',ref.documentId))[0];
   const e=row?.event as Issued|undefined;if(!e)throw new NotFoundException();const source=validateProductionGuidesSnapshot(e.snapshot),body=source.body as any;
   // Cross-RUC disclosure is limited to the immutable 09 naming this exact contracted carrier.
-  if(source.profile!=='GRE09_PUBLIC01_V1'||source.documentType!=='09'||source.issuer.ruc!==ref.issuerRuc||source.series!==ref.series||source.number!==ref.number||hash(body.carrier)!==hash(s.issuer))throw new ForbiddenException('Referencia no contrata al transportista');
+  if(!['GRE09_PUBLIC01_V1','GRE09_FUEL_PUBLIC01_SCOP_V1'].includes(source.profile)||source.documentType!=='09'||source.issuer.ruc!==ref.issuerRuc||source.series!==ref.series||source.number!==ref.number||hash(body.carrier)!==hash(s.issuer))throw new ForbiddenException('Referencia no contrata al transportista');
   return e;
  }
  async event(id:string,actor:ProductionGuidesActor){return this.load(id,actor);}
@@ -125,9 +126,10 @@ export class ProductionGuidesOwner {
  async artifact(id:string,kind:ProductionGuidesArtifactKind,actor:ProductionGuidesActor){if(!['signed-xml','submission-zip','cdr-xml','cdr-zip'].includes(kind))throw new BadRequestException();const e=await this.load(id,actor);return this.enabled().sunat.artifact(e,kind);}
  async pdf(id:string,actor:ProductionGuidesActor){const e=await this.load(id,actor);return this.enabled().sunat.pdf(e);}
  async applyStatus(event:ProductionGuidesStatusEvent){
+  event=structuredClone(event);exact(event,['eventId','eventType','result','seal']);
   const options=this.enabled(),{seal,...payload}=event;
   if(event.eventType!=='sunat.production-guides.status.v1'||!options.statusVerifier.verify(payload,seal,'STATUS'))throw new ForbiddenException('Evento de estado inválido');
-  const result=event.result;uuid(event.eventId);uuid(result.documentId);
+  const result=validateProductionGuidesResult(event.result);uuid(event.eventId);uuid(result.documentId);
   if(!Number.isSafeInteger(result.revision)||result.revision<1||!['RESERVED','PREPARED','POSTING','UNKNOWN','TICKET','ACCEPTED','ACCEPTED_WITH_OBSERVATIONS','REJECTED','FAILED_NO_CDR'].includes(result.state)||result.authorizedForTransfer!==false||result.source!=='SUNAT_OFFICIAL'&&result.officialCdrVerified)throw new BadRequestException('Estado inválido');
   return this.db.$transaction(async tx=>{
    const row=(await tx.$queryRawUnsafe<any[]>('SELECT * FROM "ProductionGuidesReservation" WHERE "documentId"=$1::uuid FOR UPDATE',result.documentId))[0];

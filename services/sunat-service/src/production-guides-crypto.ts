@@ -6,6 +6,7 @@ import type { SecretVault } from './infrastructure/crypto/secret-vault';
 import type { CertificateTrustService } from './infrastructure/crypto/certificate-trust.service';
 import type { XsdValidationService } from './infrastructure/sunat/xsd-validation.service';
 import type { ProductionGuidesGreCredentials } from './production-guides-transport';
+import { productionGuidesSolUsername } from './production-guides-sol-user';
 export type ProductionGuidesCredentialBinding=Pick<Grant,'issuerRuc'|'credentialRevision'|'certificateFingerprint'>;
 export interface ProductionGuidesSecrets extends ProductionGuidesGreCredentials {
  inspect(grant:Grant):Promise<void>;
@@ -31,13 +32,13 @@ export class ProductionGuidesVaultSecrets implements ProductionGuidesSecrets {
  async withCertificate<T>(g:ProductionGuidesCredentialBinding,work:(p12:Buffer,password:string)=>Promise<T>){const r=await this.row(g);const p12=this.vault.open(r.certificateCipher,{ruc:g.issuerRuc,environment:'PRODUCTION',field:'certificate'});let pass:Buffer|undefined;try{pass=this.vault.open(r.certificatePasswordCipher,{ruc:g.issuerRuc,environment:'PRODUCTION',field:'certificatePassword'});return await work(p12,pass.toString('utf8'));}finally{p12.fill(0);pass?.fill(0);}}
  async withGre<T>(g:Grant,work:(gre:{clientId:string;clientSecret:string},sol:{username:string;password:string})=>Promise<T>){
   const r=await this.row(g),buffers:Buffer[]=[];const open=(field:string,column:string)=>{const b=this.vault.open(r[column],{ruc:g.issuerRuc,environment:'PRODUCTION',field});buffers.push(b);return b.toString('utf8');};
-  try{return await work({clientId:open('greClientId','greClientIdCipher'),clientSecret:open('greClientSecret','greClientSecretCipher')},{username:open('solUsername','solUsernameCipher'),password:open('solPassword','solPasswordCipher')});}finally{buffers.forEach(b=>b.fill(0));}
+  try{return await work({clientId:open('greClientId','greClientIdCipher'),clientSecret:open('greClientSecret','greClientSecretCipher')},{username:productionGuidesSolUsername(g.issuerRuc,open('solUsername','solUsernameCipher')),password:open('solPassword','solPasswordCipher')});}finally{buffers.forEach(b=>b.fill(0));}
  }
 }
 export type ProductionGuidesCatalogue={version:'factuez.production-guides.catalogue.v1';companyId:number;issuerRuc:string;
  sourceUrl:string;sourceSha256:string;units:string[];ubigeos:string[];
- goods:{code:string;description:string;unitCode:string;classification:'NON_REGULATED'}[];
- routes:{origin:unknown;destination:unknown}[];vehicles:unknown[];drivers:unknown[]};
+ goods:{code:string;description:string;unitCode:string;classification:'NON_REGULATED'|'FUEL_SCOP'}[];
+ routes:{origin:unknown;destination:unknown;fuelRegime?:'ORDINARY_GRE'}[];vehicles:unknown[];drivers:unknown[]};
 /** Pinned reviewed narrow catalogue, not a claim of running all SUNAT XSL rules. */
 export class ProductionGuidesCatalogueRules {
  #catalogue:ProductionGuidesCatalogue;
@@ -45,7 +46,7 @@ export class ProductionGuidesCatalogueRules {
  async validate(snapshot:Snapshot,g:Grant){
   const s=validateProductionGuidesSnapshot(snapshot),b=s.body as any,c=this.#catalogue;
   if(c.version!=='factuez.production-guides.catalogue.v1'||c.companyId!==s.scope.companyId||c.issuerRuc!==s.issuer.ruc||hash(c)!==g.rulesSha256||!/^https:\/\/(?:cpe\.|www\.)?sunat\.gob\.pe\//.test(c.sourceUrl)||!/^[a-f0-9]{64}$/.test(c.sourceSha256))throw Error('GRE_CATALOGUE_PIN_INVALID');
-  if(![b.origin.ubigeo,b.destination.ubigeo].every(x=>c.ubigeos.includes(x))||!c.routes.some(x=>hash(x.origin)===hash(b.origin)&&hash(x.destination)===hash(b.destination))||b.items.some((i:any)=>!c.units.includes(i.unitCode)||!c.goods.some(x=>x.classification==='NON_REGULATED'&&x.code===i.code&&x.description===i.description&&x.unitCode===i.unitCode)))throw Error('GRE_CATALOGUE_NOT_APPROVED');
+  if(![b.origin.ubigeo,b.destination.ubigeo].every(x=>c.ubigeos.includes(x))||!c.routes.some(x=>hash(x.origin)===hash(b.origin)&&hash(x.destination)===hash(b.destination)&&(!b.fuel||x.fuelRegime==='ORDINARY_GRE'))||b.items.some((i:any)=>!c.units.includes(i.unitCode)||!c.goods.some(x=>x.classification===(b.fuel?'FUEL_SCOP':'NON_REGULATED')&&x.code===i.code&&x.description===i.description&&x.unitCode===i.unitCode)))throw Error('GRE_CATALOGUE_NOT_APPROVED');
   if(b.transport?.vehicle&&!c.vehicles.some(x=>hash(x)===hash(b.transport.vehicle))||b.transport?.driver&&!c.drivers.some(x=>hash(x)===hash(b.transport.driver)))throw Error('GRE_TRANSPORT_NOT_APPROVED');
  }
 }

@@ -2,7 +2,10 @@
 export const PRODUCTION_GUIDES_VERSION = 'factuez.production-guides.v1' as const;
 export const PRODUCTION_GUIDES_ISSUED = 'billing.production-guides.issued.v1';
 export const PRODUCTION_GUIDES_STATUS = 'sunat.production-guides.status.v1';
-export type ProductionGuidesProfile = 'GRE09_PRIVATE04_V1' | 'GRE09_PUBLIC01_V1' | 'GRE31_PUBLIC_SINGLE09_V1';
+export const PRODUCTION_GUIDES_PROFILES = ['GRE09_PRIVATE04_V1', 'GRE09_PUBLIC01_V1', 'GRE31_PUBLIC_SINGLE09_V1', 'GRE09_FUEL_PRIVATE04_SCOP_V1', 'GRE09_FUEL_PUBLIC01_SCOP_V1', 'GRE31_FUEL_PUBLIC_SINGLE09_V1'] as const;
+export type ProductionGuidesProfile = typeof PRODUCTION_GUIDES_PROFILES[number];
+export type ProductionGuidesFuel = { schemaVersion: 'factuez.fuel-guide.v1'; regime: 'ORDINARY_GRE'; scopCode: string };
+
 export type ProductionGuidesState = 'RESERVED' | 'PREPARED' | 'POSTING' | 'UNKNOWN' | 'TICKET' | 'ACCEPTED' | 'ACCEPTED_WITH_OBSERVATIONS' | 'REJECTED' | 'FAILED_NO_CDR';
 export type ProductionGuidesScope = { companyId: number; issuerRuc: string; branchId: string; pointId: string; seriesCounterId: string; establishmentCode: string };
 export type ProductionGuidesSnapshot = {
@@ -15,7 +18,13 @@ export type ProductionGuidesSeal = { keyId: string; signature: string };
 export type ProductionGuidesIssued = { eventId: string; eventType: typeof PRODUCTION_GUIDES_ISSUED; snapshot: ProductionGuidesSnapshot; snapshotSha256: string; seal: ProductionGuidesSeal };
 export type ProductionGuidesResult = { documentId: string; snapshotSha256: string; state: ProductionGuidesState;
  revision: number; ticket?: string; xmlSha256?: string; zipSha256?: string; cdrZipSha256?: string;
- source: 'SUNAT_OFFICIAL' | 'LOCAL_SYNTHETIC'; officialCdrVerified: boolean; authorizedForTransfer: false };
+ source: 'SUNAT_OFFICIAL' | 'LOCAL_SYNTHETIC'; officialCdrVerified: boolean; authorizedForTransfer: false;
+ /** Bounded public details from verified CDR; raw signed originals remain the evidence. */
+ responseCode?: string; description?: string; notes?: string[];
+ /** Unauthenticated ticket diagnostic, never evidence of acceptance. */
+ functionalError?: { code?: string; message?: string };
+ /** Only from an accepted, authenticated and document-bound official CDR. */
+ qrUrl?: string };
 export type ProductionGuidesStatusEvent = { eventId: string; eventType: typeof PRODUCTION_GUIDES_STATUS; result: ProductionGuidesResult; seal: ProductionGuidesSeal };
 export type ProductionGuidesGrant = ProductionGuidesScope & { actorId: string; version: number; enabled: boolean;
  profiles: ProductionGuidesProfile[]; credentialRevision: number; certificateFingerprint: string;

@@ -6,6 +6,8 @@ import { DemoBootstrapService } from './application/demo-bootstrap.service';
 import { IssuanceQueryService } from './application/issuance-query.service';
 import { DocumentsController } from './documents.controller';
 import { StationsController } from './stations.controller';
+import { GuideOperationalSettingsController } from './guide-operational-settings.controller';
+import { GuideOperationalSettingsService } from './application/guide-operational-settings.service';
 import { StationAdminService } from './application/station-admin.service';
 import { ProductAdminService } from './application/product-admin.service';
 import { ProductsController } from './products.controller';
@@ -24,11 +26,12 @@ import { FinancialLedgerCandidateService } from './application/financial-ledger-
 
 @Module({
   imports: [ScheduleModule.forRoot()],
-  controllers: [...PRODUCTION_NOTES_BILLING_CONTROLLERS, DocumentsController, StationsController, ProductsController, ClientIntakeController, PrintSettingsController, HealthController],
+  controllers: [...PRODUCTION_NOTES_BILLING_CONTROLLERS, DocumentsController, StationsController, GuideOperationalSettingsController, ProductsController, ClientIntakeController, PrintSettingsController, HealthController],
   providers: [
     ...PRODUCTION_NOTES_BILLING_PROVIDERS,
     PrismaService,
     StationAdminService,
+    GuideOperationalSettingsService,
     ProductAdminService,
     PrintBrandingService,
     IssueDocumentService,

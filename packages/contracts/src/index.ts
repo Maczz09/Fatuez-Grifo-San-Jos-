@@ -15,3 +15,5 @@ export * from './production-notes';
 export * from './production-guides';
 
 export * from './production-batches';
+
+export * from './guide-operational-settings';
